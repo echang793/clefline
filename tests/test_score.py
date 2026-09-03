@@ -51,6 +51,25 @@ def test_range_fold_of_empty_line():
     assert fit_to_range([]) == []
 
 
+def test_a_lone_stray_note_folds_near_its_neighbors_not_to_the_range_boundary():
+    """Regression: [85, 85, 22, 85] used to fold 22 down to 58, the bottom of
+    the horn -- a 27-semitone leap next to a run of notes at 85. It should fold
+    to whichever in-range octave of the same pitch class is actually close to
+    where the phrase already is."""
+    from score import ALTO_SAX_HIGH, ALTO_SAX_LOW
+
+    fitted = fit_to_range([85, 85, 22, 85])
+    assert all(ALTO_SAX_LOW <= m <= ALTO_SAX_HIGH for m in fitted)
+    leaps = [abs(b - a) for a, b in zip(fitted, fitted[1:], strict=False)]
+    assert max(leaps) <= 4
+
+
+def test_the_stray_note_still_lands_on_the_right_pitch_class():
+    """Folding by octave must never change which note is actually sounded."""
+    fitted = fit_to_range([85, 85, 22, 85])
+    assert fitted[2] % 12 == 22 % 12
+
+
 @pytest.mark.parametrize("concert_sharps,expected", [
     (4, -5),    # concert C# minor -> A# minor (7 sharps) is spelled B-flat minor
     (5, -4),    # concert B major -> G# major (8) is spelled A-flat major

@@ -109,6 +109,69 @@ def spotify_metadata(url: str) -> dict:
     }
 
 
+# Words that mark an upload as something other than the studio recording. A
+# live take or cover can have a near-identical title and a coincidentally
+# close duration, which used to be enough to win -- Spotify's own track is the
+# studio single, so its title carries none of these words, and a candidate
+# whose title does is almost never the right match.
+_ALTERNATE_VERSION_WORDS = frozenset({
+    "live", "cover", "remix", "acoustic", "instrumental", "karaoke", "tribute",
+    "reaction", "slowed", "sped up", "nightcore", "8d audio", "type beat",
+    "parody", "piano version", "reverb", "extended", "mashup", "megamix",
+})
+_ALTERNATE_VERSION_PENALTY = 0.55
+
+# YouTube auto-generates a "<Artist> - Topic" channel from official audio
+# delivered to streaming services -- the same master Spotify plays. It is the
+# single strongest signal available that a candidate is the real recording
+# rather than a fan upload, cover, or reaction video.
+_OFFICIAL_CHANNEL_BONUS = 0.10
+
+
+def _matched_version_words(text: str) -> frozenset[str]:
+    normalized = f" {_norm(text)} "
+    return frozenset(word for word in _ALTERNATE_VERSION_WORDS if f" {word} " in normalized)
+
+
+def _score_candidate(
+    *, wanted: str, entry_title: str, uploader: str, artist: str,
+    duration: float, entry_duration: float,
+) -> tuple[float, str]:
+    """The ranking formula, factored out so it can be tested without a network call."""
+    text_score = SequenceMatcher(
+        None, wanted, _norm(f"{uploader} {entry_title}")
+    ).ratio()
+
+    if duration and entry_duration:
+        delta = abs(entry_duration - duration)
+        # Full credit inside the tolerance, then falling off to nothing at 30s.
+        duration_score = (
+            1.0 if delta <= DURATION_TOLERANCE
+            else max(0.0, 1 - (delta - DURATION_TOLERANCE) / 30)
+        )
+        note = f"{delta:.0f}s from the Spotify duration"
+    else:
+        duration_score, note = 0.5, "duration unknown"
+
+    # Duration is the stronger signal: titles are noisy, length is not.
+    score = 0.4 * text_score + 0.6 * duration_score
+
+    # A word like "live" only counts against a candidate if the requested
+    # track itself isn't already that version -- if you asked Spotify for the
+    # live recording, a YouTube upload saying so is the right match, not a
+    # mismatch.
+    flagged = _matched_version_words(entry_title) - _matched_version_words(wanted)
+    if flagged:
+        score *= _ALTERNATE_VERSION_PENALTY
+        note = f"{note}, titled \"{next(iter(flagged))}\""
+
+    if _norm(uploader).replace(" topic", "") == _norm(artist) and uploader.endswith("- Topic"):
+        score += _OFFICIAL_CHANNEL_BONUS
+        note = f"{note}, official audio channel"
+
+    return round(score, 3), note
+
+
 def search_youtube(title: str, artist: str, duration: float, limit: int = 5) -> list[Candidate]:
     """Rank YouTube uploads against a known track. Best match first."""
     query = f"{artist} {title} audio".strip()
@@ -119,32 +182,24 @@ def search_youtube(title: str, artist: str, duration: float, limit: int = 5) -> 
     for entry in data.get("entries") or []:
         if not entry.get("id"):
             continue
+        entry_title = entry.get("title") or ""
+        uploader = entry.get("uploader") or entry.get("channel") or ""
         entry_duration = float(entry.get("duration") or 0)
-        text_score = SequenceMatcher(
-            None, wanted, _norm(f"{entry.get('uploader') or ''} {entry.get('title') or ''}")
-        ).ratio()
 
-        if duration and entry_duration:
-            delta = abs(entry_duration - duration)
-            # Full credit inside the tolerance, then falling off to nothing at 30s.
-            duration_score = (
-                1.0 if delta <= DURATION_TOLERANCE
-                else max(0.0, 1 - (delta - DURATION_TOLERANCE) / 30)
-            )
-            note = f"{delta:.0f}s from the Spotify duration"
-        else:
-            duration_score, note = 0.5, "duration unknown"
+        score, note = _score_candidate(
+            wanted=wanted, entry_title=entry_title, uploader=uploader, artist=artist,
+            duration=duration, entry_duration=entry_duration,
+        )
 
         candidates.append(
             Candidate(
                 source_id=entry["id"],
-                title=entry.get("title") or "",
-                uploader=entry.get("uploader") or entry.get("channel") or "",
+                title=entry_title,
+                uploader=uploader,
                 duration=entry_duration,
                 thumbnail=(entry.get("thumbnails") or [{}])[-1].get("url", ""),
                 url=f"https://www.youtube.com/watch?v={entry['id']}",
-                # Duration is the stronger signal: titles are noisy, length is not.
-                score=round(0.4 * text_score + 0.6 * duration_score, 3),
+                score=score,
                 note=note,
             )
         )

@@ -24,6 +24,23 @@ MINOR_PROFILE = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 
 
 # Chord templates as pitch-class offsets from the root, with the suffix music21
 # expects in a ChordSymbol figure.
+#
+# Two families of quality are deliberately absent, both confirmed by test
+# rather than assumed: see test_a_sixth_chord_is_not_a_template_this_app_offers
+# and test_extended_qualities_match_their_own_template_best in test_harmony.py.
+#
+# - 6th and add9 chords: a C6 (C E G A) and an Am7 (A C E G) are the identical
+#   four pitch classes, and chroma has no bass note to break the tie. A 6th
+#   template would not add information here -- only a coin-flip against m7.
+# - 9th chords and half-diminished (m7b5): tried and measured, not merely
+#   suspected. A dominant 9 loses to a plain 7 even on its own textbook chroma
+#   vector, because L2-normalising a 5-note template dilutes it more than a
+#   passing 9th is worth. m7b5 is worse: its upper three notes (b3, b5, b7)
+#   are themselves a minor triad, so a half-diminished chord's own textbook
+#   chroma is won by "minor triad on the third" rather than by m7b5 itself --
+#   a real music-theoretic ambiguity no bass-blind template can resolve, not
+#   a scoring bug. Both were added, both failed their own noiseless synthetic
+#   case, both were removed rather than kept and hoped-would-work on real audio.
 QUALITIES: list[tuple[str, tuple[int, ...], float]] = [
     ("", (0, 4, 7), 1.00),          # major
     ("m", (0, 3, 7), 1.00),         # minor
@@ -32,6 +49,9 @@ QUALITIES: list[tuple[str, tuple[int, ...], float]] = [
     ("maj7", (0, 4, 7, 11), 0.95),
     ("sus4", (0, 5, 7), 0.90),
     ("dim", (0, 3, 6), 0.88),
+    ("7sus4", (0, 5, 7, 10), 0.88),    # distinct from sus4 (has the b7) and 7 (has no 3rd)
+    ("dim7", (0, 3, 6, 9), 0.85),      # fully diminished -- symmetric, distinctive
+    ("aug", (0, 4, 8), 0.82),          # symmetric, distinctive
 ]
 
 CHANGE_PENALTY = 0.32   # cost of switching chord between beats
@@ -86,6 +106,16 @@ CHORD_WEIGHT = 0.8
 ACCIDENTAL_PENALTY = 0.02
 
 
+# Extended qualities belong to a key exactly where their simpler ancestor does
+# -- a V9 is exactly as diatonic as a V7, a vii-half-diminished exactly as
+# diatonic as a plain vii-dim. Folding to that ancestor here keeps DIATONIC
+# itself small instead of needing an entry for every extension of every degree.
+# "aug" has no entry on purpose: an augmented triad is a chromatic/borrowed
+# chord in every diatonic major or minor scale, so it should never count as
+# in-key evidence, and leaving it unmapped does exactly that.
+_DIATONIC_FAMILY = {"7sus4": "7", "dim7": "dim"}
+
+
 def _diatonic_fraction(tonic: int, mode: str, chords: list[tuple[int, str]]) -> float:
     """Share of the detected chords that belong to this key."""
     if not chords:
@@ -94,8 +124,10 @@ def _diatonic_fraction(tonic: int, mode: str, chords: list[tuple[int, str]]) -> 
     hits = 0
     for root, suffix in chords:
         allowed = table.get((root - tonic) % 12)
-        if allowed and (suffix in allowed or suffix.rstrip("7") in
-                        {a.rstrip("7") for a in allowed}):
+        if not allowed:
+            continue
+        family = _DIATONIC_FAMILY.get(suffix, suffix)
+        if family in allowed or family.rstrip("7") in {a.rstrip("7") for a in allowed}:
             hits += 1
     return hits / len(chords)
 

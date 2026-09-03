@@ -66,6 +66,14 @@ Or transcribe from the terminal:
 .venv/bin/python src/cli.py <youtube-or-spotify-url> --part sax
 ```
 
+`data/` has no automatic expiry, so it grows with every song and job. Clean it
+up periodically (dry run by default, `--yes` to actually delete):
+
+```bash
+.venv/bin/python scripts/cleanup.py                 # preview
+.venv/bin/python scripts/cleanup.py --yes            # delete jobs >14d, songs >60d old
+```
+
 ## Test
 
 ```bash

@@ -77,7 +77,15 @@ def fit_to_range(midis: list[int], low: int = ALTO_SAX_LOW, high: int = ALTO_SAX
     """Shift the whole line by octaves to fit, then fold any stragglers.
 
     Shifting everything together first preserves the melodic contour; folding a
-    single note is a last resort that makes a leap where the singer had none.
+    single note is a last resort for whatever the global shift couldn't reach.
+
+    A straggler is folded to whichever in-range octave of its own pitch class
+    sits closest to the previous fitted note, not to the first octave a blind
+    "step up until in range" walk happens to land on. The old approach always
+    folded a note below the floor down to the bottom of the horn and one above
+    the ceiling up to the top, regardless of where the phrase actually was --
+    a low outlier next to a run of high notes got yanked to the opposite end of
+    the range, a 20+ semitone leap the singer never sang.
     """
     if not midis:
         return []
@@ -91,15 +99,29 @@ def fit_to_range(midis: list[int], low: int = ALTO_SAX_LOW, high: int = ALTO_SAX
         if best_cost is None or cost < best_cost:
             best_shift, best_cost = shift, cost
 
-    fitted = []
+    fitted: list[int] = []
     for m in midis:
         value = m + best_shift
-        while value < low:
-            value += 12
-        while value > high:
-            value -= 12
-        fitted.append(value)
+        if low <= value <= high:
+            fitted.append(value)
+            continue
+        anchor = fitted[-1] if fitted else (low + high) // 2
+        fitted.append(_nearest_octave_in_range(value, low, high, anchor))
     return fitted
+
+
+def _nearest_octave_in_range(value: int, low: int, high: int, anchor: int) -> int:
+    """Every octave of `value`'s pitch class that falls in [low, high], closest to `anchor`.
+
+    The range spans more than an octave, so at least one candidate always
+    exists for any pitch class.
+    """
+    base = low + ((value - low) % 12)
+    candidates = []
+    while base <= high:
+        candidates.append(base)
+        base += 12
+    return min(candidates, key=lambda c: abs(c - anchor))
 
 
 def _add_header(part: stream.Part, *, clef_obj, sharps: int, time_signature: str,

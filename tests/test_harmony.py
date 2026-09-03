@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from harmony import QUALITIES, _chroma, _templates, estimate_key
+from harmony import QUALITIES, _chroma, _diatonic_fraction, _templates, estimate_key
 
 
 def chroma_for(pitch_classes, rows: int = 32) -> np.ndarray:
@@ -51,6 +51,40 @@ def test_a_minor_seventh_is_not_mistaken_for_a_major_triad():
     scores = chroma_for([0, 3, 7, 10])[0] @ templates.T
     root, suffix = labels[int(scores.argmax())]
     assert root == 0 and suffix in ("m7", "m")
+
+
+@pytest.mark.parametrize("pitch_classes,expected_suffix", [
+    ([0, 5, 7, 10], "7sus4"),
+    ([0, 3, 6, 9], "dim7"),
+    ([0, 4, 8], "aug"),
+])
+def test_extended_qualities_match_their_own_template_best(pitch_classes, expected_suffix):
+    """These three passed; dominant 9 and half-diminished (m7b5) were tried the
+    same way and did not -- see the excluded-on-purpose block in QUALITIES."""
+    templates, labels = _templates()
+    scores = chroma_for(pitch_classes)[0] @ templates.T
+    root, suffix = labels[int(scores.argmax())]
+    assert (root, suffix) == (0, expected_suffix)
+
+
+@pytest.mark.parametrize("suffix", ["6", "m6", "9", "m7b5", "add9"])
+def test_ambiguous_qualities_are_not_offered(suffix):
+    """C6 (C E G A) and Am7 (A C E G) are the identical four pitch classes --
+    chroma has no bass note to break the tie. Dominant 9 and m7b5 looked safer
+    but measurably were not: both lost to a simpler chord on their own
+    noiseless synthetic chroma (test_extended_qualities_match_their_own_template_best
+    once included them, and failed)."""
+    assert suffix not in {q[0] for q in QUALITIES}
+
+
+@pytest.mark.parametrize("root,suffix,mode,in_key", [
+    (7, "7sus4", "major", True),    # V7sus4 is exactly as diatonic as V7
+    (11, "dim7", "major", True),    # vii-fully-diminished, still the vii chord
+    (0, "aug", "major", False),     # augmented is never diatonic
+])
+def test_extended_qualities_fold_to_their_diatonic_family(root, suffix, mode, in_key):
+    fraction = _diatonic_fraction(0, mode, [(root, suffix)])
+    assert (fraction > 0) == in_key
 
 
 # --------------------------------------------------------------------- real audio
