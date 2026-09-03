@@ -24,6 +24,20 @@ PAGE_HEIGHT_UNITS = 2794
 PAGE_WIDTH_PT = 612.0
 PAGE_HEIGHT_PT = 792.0
 
+# Candidate system fonts with broad script coverage, for titles that carry
+# CJK, Cyrillic, Greek, or other characters outside Latin-1. reportlab's default
+# text font only covers Latin-1: a title like "是你" downloaded correctly and
+# rendered fine in the on-screen SVG (the browser draws it), but the PDF path
+# silently dropped every glyph and printed nothing. Tried in order; the first
+# one that exists on this machine is used. Absence is not an error — a title
+# outside the font's coverage still degrades the way it always did.
+UNICODE_FONT_NAME = "ClefUnicodeFallback"
+UNICODE_FONT_CANDIDATES = (
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",   # macOS
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",    # common Linux path
+    "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
+)
+
 VEROVIO_OPTIONS = {
     "pageWidth": PAGE_WIDTH_UNITS,
     "pageHeight": PAGE_HEIGHT_UNITS,
@@ -124,6 +138,21 @@ SMUFL_TEXT = {
 }
 
 
+def _unicode_font() -> str | None:
+    """Register the first available broad-coverage font. Cached after the first call."""
+    if not hasattr(_unicode_font, "_name"):
+        from svglib.svglib import register_font
+
+        _unicode_font._name = None
+        for path in UNICODE_FONT_CANDIDATES:
+            if Path(path).exists():
+                registered, ok = register_font(UNICODE_FONT_NAME, path)
+                if ok:
+                    _unicode_font._name = registered
+                break
+    return _unicode_font._name
+
+
 def _flatten_text(svg: str) -> str:
     """Collapse verovio's nested tspans into plain <text>, for the PDF writer.
 
@@ -171,6 +200,14 @@ def _flatten_text(svg: str) -> str:
         text.text = content
         if sizes:
             text.set("font-size", max(sizes, key=lambda v: float(v.rstrip("px") or 0)))
+
+        # reportlab's default text font only covers Latin-1. A title in Chinese,
+        # Cyrillic, Greek etc. needs a real font or its glyphs are silently
+        # dropped — not garbled, just gone, which is worse than a visible box.
+        # Ordinary titles are left on verovio's own font-family so the page
+        # looks exactly as it did before this existed.
+        if any(ord(c) > 0xFF for c in content) and (font := _unicode_font()):
+            text.set("font-family", font)
 
     return ET.tostring(root, encoding="unicode")
 

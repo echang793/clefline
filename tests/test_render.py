@@ -80,3 +80,24 @@ def test_render_produces_every_artifact(tmp_path):
     assert artifacts["page_count"] >= 1
     for name in ("pdf", "midi", "musicxml"):
         assert Path(artifacts[name]).stat().st_size > 0
+
+
+def test_ascii_text_keeps_verovios_own_font():
+    """Ordinary titles must render exactly as before this existed — no fallback
+    font swapped in where the default already covers everything."""
+    out = flattened("Plain English Title")
+    assert "font-family" not in out.split("</text>")[-2].rsplit("<text", 1)[-1]
+
+
+def test_non_latin1_text_gets_a_fallback_font_when_one_is_available():
+    """Regression: a title like "是你" downloaded fine and rendered correctly
+    in the on-screen SVG, but reportlab's default PDF font has no CJK glyphs
+    and silently dropped every character — the page just had a blank gap where
+    the title should be. font-family only needs setting when content actually
+    needs it; whether one is available on this machine is not something the
+    test can assume, so it only checks the two are consistent."""
+    from render import _unicode_font
+
+    out = flattened("是你")
+    has_font_attr = 'font-family="' in out
+    assert has_font_attr == (_unicode_font() is not None)

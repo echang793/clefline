@@ -139,18 +139,32 @@ def _finish(part: stream.Part) -> stream.Part:
     return finished
 
 
-def clean_title(text: str) -> str:
-    """Drop characters the engraver has no glyph for.
+# Emoji, symbol and flag ranges: verovio's text font has no glyph for these and
+# they print as solid black boxes. This is deliberately narrow \u2014 it must not
+# catch CJK, Cyrillic, Greek, or accented Latin, all of which render correctly
+# (verovio emits real <text> for titles; the browser or PDF font draws it, not
+# verovio's own glyph set). An earlier version filtered by codepoint instead of
+# by range and stripped every non-Latin-alphabet title down to nothing, which is
+# how a song titled "\u662f\u4f60" ended up printed as "Untitled".
+_EMOJI_RANGES = (
+    (0x1F1E6, 0x1F1FF),   # regional indicator letters (flag emoji)
+    (0x1F300, 0x1FAFF),   # misc symbols/pictographs through symbols-and-pictographs-extended-A
+    (0x2600, 0x27BF),     # misc symbols, dingbats
+    (0x2190, 0x21FF),     # arrows (used as decoration in some upload titles)
+    (0x2B00, 0x2BFF),     # misc symbols and arrows
+    (0xFE00, 0xFE0F),     # variation selectors (emoji presentation)
+    (0x200D, 0x200D),     # zero-width joiner (combines emoji sequences)
+)
 
-    Upload titles are full of emoji and flags. verovio's text font has nothing
-    to draw for them, so they print as solid black boxes across the top of the
-    page. Anything outside Latin-1 plus common punctuation is dropped.
-    """
-    kept = [
-        c for c in (text or "")
-        if c.isascii() or (c.isalpha() and ord(c) < 0x2000)
-        or c in "\u2018\u2019\u201c\u201d\u2013\u2014\u266d\u266f"
-    ]
+
+def _is_emoji(char: str) -> bool:
+    code = ord(char)
+    return any(low <= code <= high for low, high in _EMOJI_RANGES)
+
+
+def clean_title(text: str) -> str:
+    """Drop the glyphs the engraver actually can't draw, keep everything else."""
+    kept = [c for c in (text or "") if not _is_emoji(c)]
     return " ".join("".join(kept).split()).strip(" -\u2013\u2014") or "Untitled"
 
 

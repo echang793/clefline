@@ -94,3 +94,24 @@ def test_titles_drop_glyphs_the_engraver_cannot_draw(raw, expected):
     """Emoji have no glyph in the music text font and print as solid boxes."""
     from score import clean_title
     assert clean_title(raw) == expected
+
+
+@pytest.mark.parametrize("title", [
+    "是你",                        # regression: this exact title printed "Untitled"
+    "Тест Кириллица",
+    "Ünïcödé Café",
+    "日本語のタイトル",
+    "제목",
+])
+def test_non_latin_titles_are_kept_intact(title):
+    """CJK, Cyrillic, Greek and accented Latin all render correctly — verovio
+    emits real <text>, not glyph paths, so the browser or PDF font draws it.
+    An earlier version filtered by codepoint range instead of by actual emoji
+    ranges and stripped every non-Latin-alphabet title down to nothing."""
+    from score import clean_title
+    assert clean_title(title) == title
+
+
+def test_emoji_stripped_from_a_non_latin_title_leaves_the_rest():
+    from score import clean_title
+    assert clean_title("是你 \U0001f3a7") == "是你"
