@@ -1,8 +1,9 @@
 """Key and chord estimation, driven by chroma built by hand so it is unambiguous."""
 
 import numpy as np
+import pytest
 
-from harmony import QUALITIES, _templates, estimate_key
+from harmony import QUALITIES, _chroma, _templates, estimate_key
 
 
 def chroma_for(pitch_classes, rows: int = 32) -> np.ndarray:
@@ -50,3 +51,36 @@ def test_a_minor_seventh_is_not_mistaken_for_a_major_triad():
     scores = chroma_for([0, 3, 7, 10])[0] @ templates.T
     root, suffix = labels[int(scores.argmax())]
     assert root == 0 and suffix in ("m7", "m")
+
+
+# --------------------------------------------------------------------- real audio
+#
+# Everything above tests the algorithm in isolation. This checks the whole
+# pipeline (grid + chroma + chord evidence + key estimate) against real
+# recordings whose key is independently documented, not just internally
+# consistent. Network + slow, so it is skipped by default; run explicitly with
+# `pytest -m network` to re-verify after touching grid.py or harmony.py.
+#
+# Ground truth was cross-checked against more than one source, since automated
+# aggregator sites (Tunebat, SongBPM, GetSongKey) source their key data from
+# Spotify's own audio-analysis API — the same class of imperfect tool this is
+# validating, not independent ground truth. "Perfect" is a case in point: it is
+# widely listed as G major (the transposed easy-piano edition's key, not the
+# recording), while SingingCarrots' hand-verified vocal-range data and a music
+# press search both confirm the actual studio master is in Ab major.
+REAL_SONGS = [
+    ("QDYfEBY9NM4", "Let It Be", "The Beatles", "C major"),
+    ("hLQl3WQQoQ0", "Someone Like You", "Adele", "A major"),
+]
+
+
+@pytest.mark.network
+@pytest.mark.parametrize("video_id,title,artist,truth", REAL_SONGS)
+def test_key_detection_matches_documented_real_songs(video_id, title, artist, truth):
+    import fetch
+    import grid
+
+    audio = fetch.download(video_id)
+    g = grid.analyze(audio)
+    detected = estimate_key(_chroma(audio, g.beats))
+    assert detected.name == truth, f"{artist} - {title}: expected {truth}, got {detected.name}"
