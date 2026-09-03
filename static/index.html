@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>clefline</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>clefline</h1>
+  <p class="tagline">Paste a song. Pick an instrument. Get a chart.</p>
+</header>
+
+<main>
+  <section class="card" id="input-card">
+    <label for="url">YouTube or Spotify track link</label>
+    <div class="row">
+      <input id="url" type="url" placeholder="https://open.spotify.com/track/… or https://youtu.be/…" autocomplete="off">
+      <button id="find" class="primary">Find</button>
+    </div>
+    <p class="hint">Spotify serves no audio, so a Spotify link is matched to a YouTube upload for you to confirm.</p>
+    <p class="error" id="input-error" hidden></p>
+  </section>
+
+  <section class="card" id="confirm-card" hidden>
+    <h2>Is this the right recording?</h2>
+    <div id="requested" class="requested" hidden></div>
+    <div id="match" class="match"></div>
+    <details id="alternatives-wrap" hidden>
+      <summary>Not it — show other matches</summary>
+      <div id="alternatives"></div>
+    </details>
+
+    <h2 class="spaced">Which part?</h2>
+    <div class="parts" id="parts">
+      <button class="part" data-part="sax">
+        <span class="part-name">Alto Sax</span>
+        <span class="part-note">Lead line from the vocal, in E♭</span>
+      </button>
+      <button class="part" data-part="keys">
+        <span class="part-name">Keyboard</span>
+        <span class="part-note">Lead sheet: melody + chord symbols</span>
+      </button>
+      <button class="part" data-part="drums">
+        <span class="part-name">Drumset</span>
+        <span class="part-note">Kick, snare, hats on a percussion staff</span>
+      </button>
+    </div>
+
+    <details class="adjust">
+      <summary>Adjust</summary>
+      <p class="hint">Detection is not always right. These override it; re-transcribing with a change is quick once the song is cached.</p>
+      <div class="fields">
+        <label>Rhythm grid
+          <select id="subdivision">
+            <option value="2">Eighths — simplest</option>
+            <option value="4" selected>Sixteenths — default</option>
+            <option value="3">Eighth triplets</option>
+          </select>
+        </label>
+        <label>Key signature
+          <select id="sharps">
+            <option value="">Detected</option>
+          </select>
+        </label>
+        <label>Tempo (BPM)
+          <input id="bpm" type="number" min="30" max="260" step="0.01" placeholder="Detected">
+        </label>
+      </div>
+    </details>
+    <p class="error" id="job-error" hidden></p>
+  </section>
+
+  <section class="card" id="progress-card" hidden>
+    <h2 id="progress-title">Working…</h2>
+    <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
+    <p class="stage" id="stage">Queued</p>
+    <p class="hint">First time for a song takes a couple of minutes — separating the stems is the slow part. Another instrument for the same song is quick.</p>
+  </section>
+
+  <section class="card" id="result-card" hidden>
+    <div class="result-head">
+      <div>
+        <h2 id="result-title">Score</h2>
+        <p class="detected" id="detected"></p>
+      </div>
+      <div class="downloads">
+        <a id="dl-pdf" class="primary" download>PDF</a>
+        <a id="dl-musicxml" download>MusicXML</a>
+        <a id="dl-midi" download>MIDI</a>
+      </div>
+    </div>
+    <p class="hint">Play the MIDI against the recording — if it sounds like the song, the chart is right. Expect to fix a few notes; MusicXML opens in MuseScore.</p>
+    <div id="pages" class="pages"></div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

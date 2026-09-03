@@ -1,0 +1,22 @@
+# Python 3.11 ONLY. basic-pitch's CoreML/ONNX backends have no cp313/cp314 wheels.
+demucs==4.1.0
+basic-pitch==0.4.0
+librosa==0.11.0
+music21==10.5.0
+verovio
+pretty_midi
+soundfile
+# setuptools 81+ dropped pkg_resources; resampy < 0.4.3 imports it and breaks basic-pitch.
+resampy>=0.4.3
+setuptools
+beat_this
+svglib
+reportlab
+numpy
+scipy
+yt-dlp
+fastapi
+uvicorn
+httpx
+pytest
+ruff

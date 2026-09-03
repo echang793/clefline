@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "clefline",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["src/server.py"],
+      "port": 8104
+    }
+  ]
+}

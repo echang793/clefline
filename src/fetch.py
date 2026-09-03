@@ -1,0 +1,215 @@
+"""Link -> audio.
+
+YouTube is the only real audio path. Spotify's API serves metadata and nothing
+else, so a Spotify link is resolved to title/artist/duration and then *matched*
+to a YouTube upload, which the user confirms before anything downloads.
+
+Nothing here reads or stores lyrics; the audio is the only payload.
+"""
+
+import json
+import re
+import subprocess
+import sys
+import unicodedata
+from dataclasses import asdict, dataclass
+from difflib import SequenceMatcher
+
+import httpx
+
+from paths import source_dir
+
+YT_ID = re.compile(
+    r"(?:youtu\.be/|youtube\.com/(?:watch\?(?:.*&)?v=|embed/|shorts/|live/))([A-Za-z0-9_-]{11})"
+)
+SPOTIFY_TRACK = re.compile(r"open\.spotify\.com/(?:intl-[a-z]+/)?track/([A-Za-z0-9]{22})")
+UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+
+# A YouTube upload within this many seconds of the Spotify duration is the same
+# recording; anything further out is a live cut, a remix, or an hour-long loop.
+DURATION_TOLERANCE = 4.0
+
+
+class FetchError(RuntimeError):
+    pass
+
+
+@dataclass
+class Candidate:
+    """One YouTube upload that might be the requested recording."""
+
+    source_id: str          # YouTube video id, and the cache key for the whole song
+    title: str
+    uploader: str
+    duration: float
+    thumbnail: str
+    url: str
+    score: float = 1.0      # 0-1 confidence that this matches the requested track
+    note: str = ""          # why it was picked, shown in the confirm step
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+# Always the venv's yt-dlp, never whatever is on PATH: YouTube breaks older
+# builds regularly, and a stale system copy returns HTTP 403 on the media URL
+# while still resolving metadata perfectly, which is a confusing way to fail.
+YTDLP = [sys.executable, "-m", "yt_dlp"]
+
+
+def _run_ytdlp(args: list[str]) -> dict:
+    proc = subprocess.run(
+        [*YTDLP, *args], capture_output=True, text=True, timeout=180
+    )
+    if proc.returncode != 0:
+        raise FetchError(f"yt-dlp failed: {proc.stderr.strip().splitlines()[-1:] or proc.stderr}")
+    return json.loads(proc.stdout)
+
+
+def _norm(text: str) -> str:
+    """Fold a title down to comparable words: no accents, no punctuation, no noise."""
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
+    text = re.sub(r"\((?:official|lyric|audio|video|hd|4k)[^)]*\)", " ", text)
+    text = re.sub(r"\[(?:official|lyric|audio|video|hd|4k)[^\]]*\]", " ", text)
+    text = re.sub(r"[^a-z0-9 ]+", " ", text)
+    return " ".join(text.split())
+
+
+def spotify_metadata(url: str) -> dict:
+    """Track name, artist and duration from Spotify's public page. No API key.
+
+    `og:description` is formatted "Artist / Album / Song / Year"; the first
+    segment is the artist. `music:duration` is whole seconds.
+    """
+    match = SPOTIFY_TRACK.search(url)
+    if not match:
+        raise FetchError("Not a Spotify track link.")
+    with httpx.Client(timeout=20, headers={"User-Agent": UA}, follow_redirects=True) as client:
+        html = client.get(f"https://open.spotify.com/track/{match.group(1)}").text
+
+    def meta(attr: str, value: str) -> str:
+        found = re.search(
+            rf'<meta[^>]+{attr}="{re.escape(value)}"[^>]+content="([^"]*)"', html
+        ) or re.search(
+            rf'<meta[^>]+content="([^"]*)"[^>]+{attr}="{re.escape(value)}"', html
+        )
+        return found.group(1) if found else ""
+
+    title = meta("property", "og:title")
+    description = meta("property", "og:description")
+    artist = description.split("·")[0].strip() if description else ""
+    raw_duration = meta("name", "music:duration")
+    if not title:
+        raise FetchError("Spotify page gave no track title — is the link public?")
+    return {
+        "title": title,
+        "artist": artist,
+        "duration": float(raw_duration) if raw_duration else 0.0,
+        "thumbnail": meta("property", "og:image"),
+    }
+
+
+def search_youtube(title: str, artist: str, duration: float, limit: int = 5) -> list[Candidate]:
+    """Rank YouTube uploads against a known track. Best match first."""
+    query = f"{artist} {title} audio".strip()
+    data = _run_ytdlp(["-J", "--flat-playlist", "--no-warnings", f"ytsearch{limit}:{query}"])
+    wanted = _norm(f"{artist} {title}")
+
+    candidates: list[Candidate] = []
+    for entry in data.get("entries") or []:
+        if not entry.get("id"):
+            continue
+        entry_duration = float(entry.get("duration") or 0)
+        text_score = SequenceMatcher(
+            None, wanted, _norm(f"{entry.get('uploader') or ''} {entry.get('title') or ''}")
+        ).ratio()
+
+        if duration and entry_duration:
+            delta = abs(entry_duration - duration)
+            # Full credit inside the tolerance, then falling off to nothing at 30s.
+            duration_score = (
+                1.0 if delta <= DURATION_TOLERANCE
+                else max(0.0, 1 - (delta - DURATION_TOLERANCE) / 30)
+            )
+            note = f"{delta:.0f}s from the Spotify duration"
+        else:
+            duration_score, note = 0.5, "duration unknown"
+
+        candidates.append(
+            Candidate(
+                source_id=entry["id"],
+                title=entry.get("title") or "",
+                uploader=entry.get("uploader") or entry.get("channel") or "",
+                duration=entry_duration,
+                thumbnail=(entry.get("thumbnails") or [{}])[-1].get("url", ""),
+                url=f"https://www.youtube.com/watch?v={entry['id']}",
+                # Duration is the stronger signal: titles are noisy, length is not.
+                score=round(0.4 * text_score + 0.6 * duration_score, 3),
+                note=note,
+            )
+        )
+    candidates.sort(key=lambda c: c.score, reverse=True)
+    return candidates
+
+
+def youtube_metadata(video_id: str) -> Candidate:
+    data = _run_ytdlp(["-J", "--no-warnings", f"https://www.youtube.com/watch?v={video_id}"])
+    return Candidate(
+        source_id=video_id,
+        title=data.get("title") or "",
+        uploader=data.get("uploader") or data.get("channel") or "",
+        duration=float(data.get("duration") or 0),
+        thumbnail=data.get("thumbnail") or "",
+        url=f"https://www.youtube.com/watch?v={video_id}",
+        note="direct link",
+    )
+
+
+def resolve(url: str) -> dict:
+    """Link -> the candidate to transcribe, plus alternatives for a Spotify match.
+
+    Returns a dict the UI shows in the confirm step; nothing is downloaded yet.
+    """
+    url = url.strip()
+    if match := YT_ID.search(url):
+        chosen = youtube_metadata(match.group(1))
+        return {
+            "kind": "youtube", "chosen": chosen.as_dict(),
+            "alternatives": [], "requested": None,
+        }
+
+    if SPOTIFY_TRACK.search(url):
+        requested = spotify_metadata(url)
+        candidates = search_youtube(requested["title"], requested["artist"], requested["duration"])
+        if not candidates:
+            raise FetchError("No YouTube upload found for that Spotify track.")
+        return {
+            "kind": "spotify",
+            "requested": requested,
+            "chosen": candidates[0].as_dict(),
+            "alternatives": [c.as_dict() for c in candidates[1:]],
+        }
+
+    raise FetchError("Paste a YouTube or Spotify track link.")
+
+
+def download(source_id: str, force: bool = False):
+    """Fetch the audio as 44.1k mono wav. Cached — the second call is free."""
+    directory = source_dir(source_id)
+    wav = directory / "audio.wav"
+    if wav.exists() and not force:
+        return wav
+
+    proc = subprocess.run(
+        [
+            *YTDLP, "-f", "bestaudio/best", "--no-warnings", "--no-playlist",
+            "-x", "--audio-format", "wav", "--audio-quality", "0",
+            "--postprocessor-args", "ExtractAudio:-ac 1 -ar 44100",
+            "-o", str(directory / "audio.%(ext)s"),
+            f"https://www.youtube.com/watch?v={source_id}",
+        ],
+        capture_output=True, text=True, timeout=900,
+    )
+    if not wav.exists():
+        raise FetchError(f"Download produced no audio: {proc.stderr.strip()[-400:]}")
+    return wav
