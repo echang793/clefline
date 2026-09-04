@@ -78,13 +78,23 @@ def features_at(y: np.ndarray, sr: int, onset: float) -> dict:
     magnitude = float(spectrum.sum()) or 1.0
     centroid = float((freqs * spectrum).sum() / magnitude)
 
+    # Share of total energy sitting in the loudest bin and its immediate
+    # neighbours -- how much of the spectrum one narrow peak explains. A
+    # membrane drum (kick, tom) rings at a fundamental and a few harmonics, so
+    # a handful of bins carry almost everything; a snare crack or a cymbal is
+    # noise-like, energy smeared across the whole band. Measured on synthetic
+    # strokes: toms 0.87-0.98, a snare 0.06, a ride 0.07 -- a wide enough gap
+    # that the exact threshold barely matters.
+    peak = int(spectrum.argmax())
+    peakiness = float(spectrum[max(0, peak - 3) : peak + 4].sum() / magnitude)
+
     # Decay: energy still present a beat-ish later relative to the attack.
     tail = y[start + int(WINDOW * sr) : start + int(0.28 * sr)]
     attack_rms = float(np.sqrt(np.mean(window**2))) or 1e-9
     tail_rms = float(np.sqrt(np.mean(tail**2))) if len(tail) else 0.0
 
-    return {**energies, "centroid": centroid, "decay": tail_rms / attack_rms,
-            "strength": attack_rms}
+    return {**energies, "centroid": centroid, "peakiness": peakiness,
+            "decay": tail_rms / attack_rms, "strength": attack_rms}
 
 
 def classify(features: dict) -> str:
@@ -98,9 +108,11 @@ def classify(features: dict) -> str:
     high = features["high"]
     vhigh = features["vhigh"]
     decay = features["decay"]
+    peakiness = features["peakiness"]
+    centroid = features["centroid"]
 
     # Kick: nearly all the energy is below the range anything else occupies.
-    if low > 0.45 and features["centroid"] < 350:
+    if low > 0.45 and centroid < 350:
         return "kick"
 
     # Cymbals and hi-hats live at the top of the spectrum. A snare is bright too,
@@ -110,13 +122,18 @@ def classify(features: dict) -> str:
     if (high + vhigh) > 0.5 and mid < 0.25:
         return "cymbal" if decay > 0.45 else ("hihat_open" if decay > 0.28 else "hihat")
 
+    # Tom: a membrane ringing at a fundamental, not a broadband crack -- checked
+    # by peakiness ahead of the snare rule below, or a higher-pitched tom's
+    # harmonics landing in the mid band make it indistinguishable from a
+    # snare's noisy mid-band crack to that rule alone. Measured gap is wide
+    # (0.87-0.98 for a tom's three registers vs 0.06 for a snare), so 0.5 has
+    # plenty of margin in both directions.
+    if peakiness > 0.5 and centroid < 1500 and (low + lowmid + mid) > 0.5:
+        return "tom"
+
     # Snare: a crack in the mids, with or without much low-mid body left in the stem.
     if mid > 0.22:
         return "snare"
-
-    # A pitched drum with no crack and little top end is a tom.
-    if lowmid > 0.30 and (high + vhigh) < 0.25:
-        return "tom"
 
     return "hihat" if vhigh > high else "snare"
 

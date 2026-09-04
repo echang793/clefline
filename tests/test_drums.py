@@ -35,6 +35,31 @@ def hihat(seconds: float = 0.08) -> np.ndarray:
     return (noise * np.exp(-90 * t)).astype(np.float32)
 
 
+def tom(freq: float, seconds: float = 0.4) -> np.ndarray:
+    """A membrane ringing at `freq` with a fast pitch drop, like a real tom."""
+    t = np.linspace(0, seconds, int(SR * seconds), endpoint=False)
+    sweep = freq * 1.3 * np.exp(-10 * t) + freq * 0.85
+    return (np.sin(2 * np.pi * np.cumsum(sweep) / SR) * np.exp(-6 * t)).astype(np.float32)
+
+
+def ride(seconds: float = 0.9) -> np.ndarray:
+    """A defined metallic ping plus shimmer -- moderate sustain, some pitch."""
+    t = np.linspace(0, seconds, int(SR * seconds), endpoint=False)
+    rng = np.random.default_rng(2)
+    ping = 0.5 * np.sin(2 * np.pi * 550 * t) + 0.3 * np.sin(2 * np.pi * 1100 * t)
+    shimmer = rng.normal(0, 1, len(t))
+    shimmer = shimmer - np.convolve(shimmer, np.ones(15) / 15, mode="same")
+    return ((ping * np.exp(-2.2 * t)) + 0.35 * shimmer * np.exp(-3.5 * t)).astype(np.float32)
+
+
+def crash(seconds: float = 1.8) -> np.ndarray:
+    """Broadband and long -- no defined pitch, unlike a ride."""
+    t = np.linspace(0, seconds, int(SR * seconds), endpoint=False)
+    rng = np.random.default_rng(3)
+    noise = rng.normal(0, 1, len(t))
+    return (noise * np.exp(-1.3 * t)).astype(np.float32)
+
+
 @pytest.mark.parametrize("sample,expected", [
     (kick(), "kick"),
     (snare(), "snare"),
@@ -43,6 +68,36 @@ def hihat(seconds: float = 0.08) -> np.ndarray:
 def test_the_three_voices_that_matter_are_identified(sample, expected):
     padded = np.concatenate([sample, np.zeros(SR // 2, dtype=np.float32)])
     assert classify(features_at(padded, SR, 0.0)) == expected
+
+
+@pytest.mark.parametrize("freq", [90, 150, 220])  # low, mid, high tom
+def test_toms_across_their_pitch_range_are_not_called_snare(freq):
+    """Regression: a tom's harmonics leaking into the mid band used to lose to
+    the snare rule before the tom rule (positioned after it) ever ran -- a
+    high or mid tom classified as "snare" outright, not just uncertainly.
+    Confirmed on synthetic audio before this existed: high_tom and mid_tom
+    both misclassified, only low_tom happened to survive."""
+    padded = np.concatenate([tom(freq), np.zeros(SR, dtype=np.float32)])
+    assert classify(features_at(padded, SR, 0.0)) == "tom"
+
+
+def test_a_toms_narrowband_ring_is_measurably_peakier_than_a_snares_crack():
+    tom_features = features_at(
+        np.concatenate([tom(150), np.zeros(SR, dtype=np.float32)]), SR, 0.0
+    )
+    snare_features = features_at(
+        np.concatenate([snare(), np.zeros(SR, dtype=np.float32)]), SR, 0.0
+    )
+    assert tom_features["peakiness"] > 0.8
+    assert snare_features["peakiness"] < 0.2
+
+
+def test_ride_and_crash_are_not_confused_with_a_tonal_drum():
+    """Both are cymbals in this app's vocabulary (no separate ride/crash voice
+    exists), but neither should ever be peaky enough to trip the tom rule."""
+    for sample in (ride(), crash()):
+        padded = np.concatenate([sample, np.zeros(SR, dtype=np.float32)])
+        assert classify(features_at(padded, SR, 0.0)) in ("cymbal", "hihat_open", "hihat")
 
 
 def test_a_stroke_with_no_audio_does_not_crash_the_classifier():
