@@ -6,7 +6,79 @@ from pathlib import Path
 
 from music21 import clef, harmony, meter, note, stream
 
-from render import _flatten_text, _hide_metronome, engrave, render, to_musicxml
+from render import (
+    PAGE_SIZES,
+    _flatten_text,
+    _hide_metronome,
+    _svgs_to_pdf,
+    engrave,
+    render,
+    to_musicxml,
+)
+
+
+def _score_with_notes(midis):
+    part = stream.Part()
+    part.insert(0, clef.TrebleClef())
+    part.insert(0, meter.TimeSignature("4/4"))
+    for midi in midis:
+        part.append(note.Note(midi=midi, quarterLength=1))
+    score = stream.Score()
+    score.append(part.makeNotation())
+    return score
+
+
+def _media_box(pdf_path):
+    """The PDF's own declared page size, in points -- reportlab writes
+    /MediaBox as plain ASCII, so no PDF-parsing dependency is needed to read
+    it back."""
+    import re
+
+    pattern = rb"/MediaBox\s*\[\s*[\d.]+\s+[\d.]+\s+([\d.]+)\s+([\d.]+)"
+    match = re.search(pattern, Path(pdf_path).read_bytes())
+    return float(match.group(1)), float(match.group(2))
+
+
+def test_letter_and_a4_produce_their_own_correct_point_dimensions(tmp_path):
+    """US Letter and A4 aren't just different PDF canvas sizes -- verovio's own
+    layout pass needs the true page dimensions too, or the SVG scales into
+    whitespace or clips against the wrong-shaped page."""
+    for size, expected in (("letter", (612.0, 792.0)), ("a4", (595.28, 841.89))):
+        artifacts = render(_score_with_notes([60, 62, 64, 65]), tmp_path / size, size)
+        assert _media_box(artifacts["pdf"]) == expected
+
+
+def test_an_unknown_page_size_is_rejected_clearly(tmp_path):
+    musicxml = to_musicxml(_score_with_notes([60]), tmp_path / "score.musicxml")
+    try:
+        engrave(musicxml, tmp_path / "out", page_size="legal")
+        raise AssertionError("expected a ValueError")
+    except ValueError as error:
+        assert "legal" in str(error)
+
+
+def test_svgs_to_pdf_defaults_to_letter(tmp_path):
+    """The page-size parameter is opt-in; existing callers with none must see
+    exactly the old behaviour. reportlab stamps its own creation timestamp
+    into every PDF it writes, so two otherwise-identical renders are never
+    byte-identical -- the dimensions are what has to match, not the bytes."""
+    musicxml = to_musicxml(_score_with_notes([60, 62]), tmp_path / "score.musicxml")
+    artifacts = engrave(musicxml, tmp_path / "out")
+    pages = sorted((tmp_path / "out").glob("page-*.svg"))
+    default_pdf = _svgs_to_pdf(pages, tmp_path / "default.pdf")
+    explicit_pdf = _svgs_to_pdf(pages, tmp_path / "explicit.pdf", "letter")
+    assert _media_box(default_pdf) == _media_box(explicit_pdf) == (612.0, 792.0)
+    assert artifacts["page_count"] >= 1
+
+
+def test_every_page_size_has_both_unit_systems_present():
+    for size in PAGE_SIZES.values():
+        assert size["width_units"] > 0 and size["height_units"] > 0
+        assert size["width_pt"] > 0 and size["height_pt"] > 0
+        # Aspect ratio should roughly agree between the two unit systems.
+        unit_ratio = size["width_units"] / size["height_units"]
+        pt_ratio = size["width_pt"] / size["height_pt"]
+        assert abs(unit_ratio - pt_ratio) < 0.01
 
 SVG = ('<svg xmlns="http://www.w3.org/2000/svg">'
        '<text font-size="0px"><tspan x="10" y="20" text-anchor="middle" '

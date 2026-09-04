@@ -188,7 +188,8 @@ def engrave(job_id: str, part: str, prepared: dict, meta: dict, options: dict) -
     else:
         raise ValueError(f"Unknown part: {part}")
 
-    return render_module.render(built, job_dir(job_id))
+    page_size = options.get("page_size", render_module.DEFAULT_PAGE_SIZE)
+    return render_module.render(built, job_dir(job_id), page_size)
 
 
 # --------------------------------------------------------------------------- jobs

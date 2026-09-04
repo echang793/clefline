@@ -125,7 +125,10 @@ async function transcribe(part) {
     b.setAttribute("aria-pressed", String(b.dataset.part === part))
   );
 
-  const options = { subdivision: Number($("subdivision").value) };
+  const options = {
+    subdivision: Number($("subdivision").value),
+    page_size: $("page-size").value,
+  };
   if ($("sharps").value !== "") options.sharps = Number($("sharps").value);
   if ($("bpm").value !== "") options.bpm = Number($("bpm").value);
 

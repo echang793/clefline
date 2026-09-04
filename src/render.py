@@ -18,11 +18,17 @@ from pathlib import Path
 import verovio
 from music21 import stream
 
-# US Letter in verovio's tenths-of-a-millimetre units, and in PDF points.
-PAGE_WIDTH_UNITS = 2159
-PAGE_HEIGHT_UNITS = 2794
-PAGE_WIDTH_PT = 612.0
-PAGE_HEIGHT_PT = 792.0
+# Page dimensions in both units this pipeline needs: verovio's own
+# tenths-of-a-millimetre and PDF points (1/72 inch). US Letter was the only
+# option; A4 is what the rest of the world prints on, and the two aren't
+# swappable at the PDF stage alone -- get the width/height ratio wrong and
+# either the SVG scales into whitespace or clips, so verovio's own layout
+# pass needs the true page size too, not just the final PDF canvas.
+PAGE_SIZES = {
+    "letter": {"width_units": 2159, "height_units": 2794, "width_pt": 612.0, "height_pt": 792.0},
+    "a4": {"width_units": 2100, "height_units": 2970, "width_pt": 595.28, "height_pt": 841.89},
+}
+DEFAULT_PAGE_SIZE = "letter"
 
 # Candidate system fonts with broad script coverage, for titles that carry
 # CJK, Cyrillic, Greek, or other characters outside Latin-1. reportlab's default
@@ -38,9 +44,7 @@ UNICODE_FONT_CANDIDATES = (
     "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
 )
 
-VEROVIO_OPTIONS = {
-    "pageWidth": PAGE_WIDTH_UNITS,
-    "pageHeight": PAGE_HEIGHT_UNITS,
+BASE_VEROVIO_OPTIONS = {
     "pageMarginLeft": 140,
     "pageMarginRight": 140,
     "pageMarginTop": 140,
@@ -52,6 +56,15 @@ VEROVIO_OPTIONS = {
     "spacingStaff": 12,
     "spacingSystem": 10,
 }
+
+
+def _verovio_options(page_size: str) -> dict:
+    size = PAGE_SIZES[page_size]
+    return {
+        **BASE_VEROVIO_OPTIONS,
+        "pageWidth": size["width_units"],
+        "pageHeight": size["height_units"],
+    }
 
 
 def _toolkit() -> "verovio.toolkit":
@@ -121,11 +134,14 @@ def _hide_metronome(musicxml: str) -> str:
     )
 
 
-def engrave(musicxml: Path, out_dir: Path) -> dict:
+def engrave(musicxml: Path, out_dir: Path, page_size: str = DEFAULT_PAGE_SIZE) -> dict:
     """MusicXML -> SVG pages + PDF + MIDI. Returns the artifact paths and page count."""
+    if page_size not in PAGE_SIZES:
+        raise ValueError(f"Unknown page size {page_size!r}; choose one of {sorted(PAGE_SIZES)}")
+
     out_dir.mkdir(parents=True, exist_ok=True)
     toolkit = _toolkit()
-    toolkit.setOptions(VEROVIO_OPTIONS)
+    toolkit.setOptions(_verovio_options(page_size))
     if not toolkit.loadData(musicxml.read_text()):
         raise RuntimeError("verovio could not parse the MusicXML")
 
@@ -138,7 +154,7 @@ def engrave(musicxml: Path, out_dir: Path) -> dict:
     midi_path = out_dir / "score.mid"
     midi_path.write_bytes(base64.b64decode(toolkit.renderToMIDI()))
 
-    pdf_path = _svgs_to_pdf(pages, out_dir / "score.pdf")
+    pdf_path = _svgs_to_pdf(pages, out_dir / "score.pdf", page_size)
     return {
         "pages": [str(p) for p in pages],
         "page_count": len(pages),
@@ -238,35 +254,38 @@ def _flatten_text(svg: str) -> str:
     return ET.tostring(root, encoding="unicode")
 
 
-def _svgs_to_pdf(pages: list[Path], target: Path) -> Path:
-    """One SVG per PDF page, scaled to fit Letter and centred."""
+def _svgs_to_pdf(pages: list[Path], target: Path, page_size: str = DEFAULT_PAGE_SIZE) -> Path:
+    """One SVG per PDF page, scaled to fit the chosen page size and centred."""
     import io
 
     from reportlab.graphics import renderPDF
     from reportlab.pdfgen import canvas
     from svglib.svglib import svg2rlg
 
-    surface = canvas.Canvas(str(target), pagesize=(PAGE_WIDTH_PT, PAGE_HEIGHT_PT))
+    size = PAGE_SIZES[page_size]
+    width_pt, height_pt = size["width_pt"], size["height_pt"]
+
+    surface = canvas.Canvas(str(target), pagesize=(width_pt, height_pt))
     for page in pages:
         drawing = svg2rlg(io.StringIO(_flatten_text(page.read_text())))
         if drawing is None:
             continue
         if drawing.width and drawing.height:
-            scale = min(PAGE_WIDTH_PT / drawing.width, PAGE_HEIGHT_PT / drawing.height)
+            scale = min(width_pt / drawing.width, height_pt / drawing.height)
             drawing.scale(scale, scale)
             drawing.width *= scale
             drawing.height *= scale
-        x = (PAGE_WIDTH_PT - drawing.width) / 2
-        y = PAGE_HEIGHT_PT - drawing.height - (PAGE_HEIGHT_PT - drawing.height) / 2
+        x = (width_pt - drawing.width) / 2
+        y = height_pt - drawing.height - (height_pt - drawing.height) / 2
         renderPDF.draw(drawing, surface, x, max(0, y))
         surface.showPage()
     surface.save()
     return target
 
 
-def render(score: stream.Score, out_dir: Path) -> dict:
+def render(score: stream.Score, out_dir: Path, page_size: str = DEFAULT_PAGE_SIZE) -> dict:
     """Full engraving pass for one part."""
     musicxml = to_musicxml(score, out_dir / "score.musicxml")
-    artifacts = engrave(musicxml, out_dir)
+    artifacts = engrave(musicxml, out_dir, page_size)
     artifacts["musicxml"] = str(musicxml)
     return artifacts
