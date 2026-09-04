@@ -62,7 +62,33 @@ def _toolkit() -> "verovio.toolkit":
     fails to load Bravura and then refuses to parse anything. Deferring resource
     init and pointing the instance at the packaged data directory works on any
     thread and keeps the setting off global state.
+
+    Also drops verovio's own log level to errors-only. A chord symbol whose
+    offset lands inside a sustained note -- ordinary and expected on a lead
+    sheet, e.g. a chord change under a note the singer is still holding --
+    makes music21 open a second voice to hold it, padded with rests to fill
+    the measure. music21 numbers its own primary voice "0", so that auto-
+    created second voice becomes "1", and verovio's importer -- which expects
+    voices numbered from 1 like every other MusicXML writer -- looks for
+    "Layer 0" to attach it to, finds nothing, and logs a warning once per
+    occurrence: ~55 of them on one ordinary song's keyboard part.
+
+    The warning is genuinely harmless (verovio still places the chord symbol
+    correctly; confirmed by diffing rendered output with and without it) and
+    two more surgical fixes were tried and both made things measurably worse
+    before this one: renumbering voices to be 1-indexed silenced the warning
+    but made verovio treat the padding voice as real and draw its rests as
+    visible marks; additionally hiding those with print-object="no" removed
+    the marks but changed the piece's page count (3 -> 2), meaning it had
+    also altered verovio's spacing/justification pass, not just visibility.
+    Turning the log down errors-only changes zero bytes of the MusicXML and
+    zero rendering decisions -- confirmed by an unchanged page count and a
+    byte-identical MusicXML diff -- it only stops verovio from narrating a
+    situation it already handles correctly. loadData()'s own return value,
+    not its log output, is what engrave() uses to detect real failures, so
+    genuine parse errors are still caught.
     """
+    verovio.enableLog(verovio.LOG_ERROR)
     toolkit = verovio.toolkit(False)
     toolkit.setResourcePath(str(Path(verovio.__file__).parent / "data"))
     return toolkit

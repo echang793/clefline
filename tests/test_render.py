@@ -1,10 +1,12 @@
 """Engraving: the SVG text pass, and that a score produces every artifact."""
 
+import contextlib
+import os
 from pathlib import Path
 
-from music21 import clef, meter, note, stream
+from music21 import clef, harmony, meter, note, stream
 
-from render import _flatten_text, _hide_metronome, render
+from render import _flatten_text, _hide_metronome, engrave, render, to_musicxml
 
 SVG = ('<svg xmlns="http://www.w3.org/2000/svg">'
        '<text font-size="0px"><tspan x="10" y="20" text-anchor="middle" '
@@ -13,6 +15,56 @@ SVG = ('<svg xmlns="http://www.w3.org/2000/svg">'
 
 def flattened(body: str) -> str:
     return _flatten_text(SVG.format(body=body))
+
+
+@contextlib.contextmanager
+def captured_fd2(tmp_path: Path):
+    """Capture the OS-level stderr file descriptor, not just sys.stderr.
+
+    verovio is a C++ binding and writes its own log lines straight to fd 2,
+    bypassing anything Python-level redirection (contextlib.redirect_stderr,
+    capsys) can see -- confirmed empirically while diagnosing this, not
+    assumed. Only a real fd-level dup2 catches it.
+    """
+    capture_path = tmp_path / "fd2.txt"
+    with open(capture_path, "w") as capture_file:
+        saved_fd = os.dup(2)
+        os.dup2(capture_file.fileno(), 2)
+        try:
+            yield capture_path
+        finally:
+            os.dup2(saved_fd, 2)
+            os.close(saved_fd)
+
+
+def test_a_chord_symbol_mid_note_does_not_warn_to_stderr(tmp_path):
+    """Regression: a chord change under a note the singer is still holding is
+    ordinary lead-sheet content, and it made music21's exporter open a second,
+    rest-only voice to carry it. verovio's importer expects voices numbered
+    from 1, not music21's 0, so it logged "Layer 0 cannot be found" once per
+    occurrence -- ~55 of them on one real song's keyboard part. Two fixes that
+    touched the MusicXML (renumbering voices, then also hiding the padding
+    voice's rests) were tried and both changed real output -- one made the
+    padding voice's rests visibly render, the other changed the page count.
+    The actual fix (verovio.enableLog in render._toolkit) changes zero bytes
+    of the MusicXML; this only has to prove the noise is gone.
+    """
+    part = stream.Part()
+    part.insert(0, clef.TrebleClef())
+    part.insert(0, meter.TimeSignature("4/4"))
+    part.insert(0.0, note.Note(midi=60, quarterLength=2.0))  # sounds 0.0-2.0
+    symbol = harmony.ChordSymbol("Cmaj7")
+    symbol.writeAsChord = False
+    part.insert(1.0, symbol)  # lands inside the note above -- the trigger
+    part.append(note.Note(midi=62, quarterLength=2.0))
+
+    score = stream.Score()
+    score.append(part.makeNotation())
+    musicxml = to_musicxml(score, tmp_path / "score.musicxml")
+
+    with captured_fd2(tmp_path) as captured:
+        engrave(musicxml, tmp_path / "out")
+    assert "Layer 0" not in captured.read_text()
 
 
 def test_real_font_size_is_hoisted_onto_the_text_element():
