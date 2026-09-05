@@ -6,6 +6,10 @@ for the melody — no words are read from it anywhere in this app.
 
 Slowest stage in the pipeline (~1-2 min on MPS for a 4-minute song) and the
 reason songs are cached: transcribing a second instrument reuses these files.
+
+Stems are FLAC, not WAV -- lossless, ~40-50% smaller, and every downstream
+reader (librosa, soundfile) handles it transparently, so this was a pure
+disk-space win. A four-minute song's six stems ran close to 200MB as WAV.
 """
 
 import shutil
@@ -24,7 +28,7 @@ class SeparationError(RuntimeError):
 
 def stem_paths(source_id: str) -> dict[str, Path]:
     directory = source_dir(source_id) / "stems"
-    return {name: directory / f"{name}.wav" for name in STEM_NAMES}
+    return {name: directory / f"{name}.flac" for name in STEM_NAMES}
 
 
 def is_separated(source_id: str) -> bool:
@@ -53,7 +57,7 @@ def separate(source_id: str, audio: Path, force: bool = False) -> dict[str, Path
     work.mkdir(parents=True, exist_ok=True)
 
     proc = subprocess.run(
-        [sys.executable, "-m", "demucs", "-n", MODEL, "-d", _device(),
+        [sys.executable, "-m", "demucs", "-n", MODEL, "-d", _device(), "--flac",
          "--out", str(work), str(audio)],
         capture_output=True, text=True, timeout=3600,
     )
@@ -67,7 +71,7 @@ def separate(source_id: str, audio: Path, force: bool = False) -> dict[str, Path
     stems_dir = directory / "stems"
     stems_dir.mkdir(parents=True, exist_ok=True)
     for name, target in targets.items():
-        made = produced / f"{name}.wav"
+        made = produced / f"{name}.flac"
         if not made.exists():
             raise SeparationError(f"demucs did not emit a {name} stem")
         shutil.move(str(made), target)

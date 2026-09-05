@@ -249,22 +249,26 @@ def resolve(url: str) -> dict:
 
 
 def download(source_id: str, force: bool = False):
-    """Fetch the audio as 44.1k mono wav. Cached — the second call is free."""
+    """Fetch the audio as 44.1k mono FLAC. Cached — the second call is free.
+
+    FLAC over WAV is a pure disk-space win (lossless, ~40-50% smaller) that
+    every downstream reader (librosa, soundfile, demucs) handles transparently.
+    """
     directory = source_dir(source_id)
-    wav = directory / "audio.wav"
-    if wav.exists() and not force:
-        return wav
+    audio_path = directory / "audio.flac"
+    if audio_path.exists() and not force:
+        return audio_path
 
     proc = subprocess.run(
         [
             *YTDLP, "-f", "bestaudio/best", "--no-warnings", "--no-playlist",
-            "-x", "--audio-format", "wav", "--audio-quality", "0",
+            "-x", "--audio-format", "flac",
             "--postprocessor-args", "ExtractAudio:-ac 1 -ar 44100",
             "-o", str(directory / "audio.%(ext)s"),
             f"https://www.youtube.com/watch?v={source_id}",
         ],
         capture_output=True, text=True, timeout=900,
     )
-    if not wav.exists():
+    if not audio_path.exists():
         raise FetchError(f"Download produced no audio: {proc.stderr.strip()[-400:]}")
-    return wav
+    return audio_path
