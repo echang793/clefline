@@ -73,6 +73,22 @@ def _progress_through(stage: str) -> float:
 
 # --------------------------------------------------------------------------- prepare
 
+# A real sung vocal covers on the order of 40-70% of a song, less with long
+# instrumental sections. An instrumental track, or one where the vocal
+# separation found almost nothing, produces only scattered bleed -- nowhere
+# close. Deliberately generous: a false "no vocal" warning on a real vocal
+# costs nothing (the chart still renders), so the threshold favors not
+# crying wolf.
+SPARSE_MELODY_THRESHOLD = 0.15
+
+
+def melody_coverage(notes: list, song_duration: float) -> float:
+    """Fraction of the song's duration actually covered by melody notes."""
+    if not song_duration:
+        return 0.0
+    return sum(n.duration for n in notes) / song_duration
+
+
 def prepare(source_id: str, on_stage=lambda name: None) -> dict:
     """Everything that depends only on the song, not on the chosen instrument."""
     directory = source_dir(source_id)
@@ -103,6 +119,7 @@ def prepare(source_id: str, on_stage=lambda name: None) -> dict:
         melody = {
             "notes": [n.as_dict() for n in line],
             "swing": quantize_module.detect_swing(line, g),
+            "coverage": melody_coverage(line, g.beats[-1] if g.beats else 0.0),
         }
         write_json(melody_file, melody)
 
@@ -194,19 +211,61 @@ def engrave(job_id: str, part: str, prepared: dict, meta: dict, options: dict) -
 
 # --------------------------------------------------------------------------- jobs
 
+def _find_reusable(source_id: str, part: str, options: dict) -> str | None:
+    """A job already running, queued, or finished for this exact request.
+
+    Two identical requests are common by accident, not intent -- a double
+    click on Find, two browser tabs, a page refresh that resubmits. Reusing
+    the existing job instead of starting a second one saves anywhere from
+    ~20 seconds (song already cached) to a couple of minutes (it isn't). A
+    job that errored is never reused: that request is exactly the one to
+    retry, not to hand back the same failure again.
+    """
+    for job in recent(limit=100):
+        if (job.get("source_id") == source_id and job.get("part") == part
+                and job.get("options") == options and job.get("state") != "error"):
+            return job.get("job_id")
+    return None
+
+
 def new_job(source_id: str, part: str, meta: dict, options: dict | None = None) -> str:
+    options = options or {}
+    if reusable := _find_reusable(source_id, part, options):
+        return reusable
+
     job_id = uuid.uuid4().hex[:12]
     write_json(
         status_path(job_id),
         {
             "job_id": job_id, "source_id": source_id, "part": part, "meta": meta,
-            "options": options or {}, "state": "queued", "stage": "queued",
+            "options": options, "state": "queued", "stage": "queued",
             "message": "Waiting to start", "progress": 0.0, "created": time.time(),
         },
     )
     _work.put(job_id)
     _ensure_worker()
     return job_id
+
+
+def recover_interrupted_jobs() -> int:
+    """Mark anything left "queued" or "running" from before this process
+    started as interrupted, and return how many were found.
+
+    The job queue is an in-memory queue.Queue: it dies with the process. A
+    crash or restart mid-job leaves that job's status.json frozen at whatever
+    percentage it was showing, forever -- no error, no retry path, just a
+    progress bar in the UI that never moves again. Called once at server
+    startup, before anything can be queued against the (now-empty) new queue.
+    """
+    count = 0
+    for job in recent(limit=1000):
+        if job.get("state") in ("queued", "running"):
+            _set_status(
+                job["job_id"], state="error",
+                message="Interrupted by a server restart -- try again.",
+            )
+            count += 1
+    return count
 
 
 def _run(job_id: str) -> None:
@@ -223,22 +282,39 @@ def _run(job_id: str) -> None:
         on_stage("engrave")
         artifacts = engrave(job_id, job["part"], prepared, job.get("meta", {}),
                             job.get("options", {}))
-        _set_status(
-            job_id, state="done", stage="done", progress=1.0,
-            message="Ready",
-            artifacts=artifacts,
-            detected={
-                "tempo": prepared["grid"].tempo,
-                "time_signature": prepared["grid"].time_signature,
-                "key": prepared["harmony"].get("key"),
-                "sharps": prepared["harmony"].get("sharps"),
-                "swing": prepared["melody"].get("swing"),
-                "beat_source": prepared["grid"].source,
-            },
-        )
-    except Exception as error:
+
+        detected = {
+            "tempo": prepared["grid"].tempo,
+            "time_signature": prepared["grid"].time_signature,
+            "key": prepared["harmony"].get("key"),
+            "sharps": prepared["harmony"].get("sharps"),
+            "swing": prepared["melody"].get("swing"),
+            "beat_source": prepared["grid"].source,
+        }
+        # Only sax and keys read the melody; a drum chart has nothing to do
+        # with how much of the song the vocal stem covered.
+        coverage = prepared["melody"].get("coverage", 1.0)
+        if job["part"] in ("sax", "keys") and coverage < SPARSE_MELODY_THRESHOLD:
+            detected["sparse_melody"] = True
+
+        _set_status(job_id, state="done", stage="done", progress=1.0,
+                    message="Ready", artifacts=artifacts, detected=detected)
+    except (fetch.FetchError, separate_module.SeparationError, RuntimeError, ValueError) as error:
+        # These already read as a clear "what and why" -- fetch/separation
+        # failures and the page-size/verovio-parse checks are all raised with
+        # a human-facing message on purpose. Shown as-is.
         _set_status(job_id, state="error", message=str(error) or type(error).__name__,
                     traceback=traceback.format_exc()[-2000:])
+    except Exception as error:
+        # Anything else is a genuine surprise -- something inside torch,
+        # librosa or music21 that this pipeline doesn't have a specific
+        # message for. Framed as unexpected rather than shown bare, so it
+        # doesn't read as if the app understood exactly what went wrong.
+        _set_status(
+            job_id, state="error",
+            message=f"Unexpected error during transcription: {error or type(error).__name__}",
+            traceback=traceback.format_exc()[-2000:],
+        )
 
 
 def _loop() -> None:

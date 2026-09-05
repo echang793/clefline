@@ -186,6 +186,7 @@ function renderResult(jobId, status) {
     detected.swing ? "swing feel" : null,
     detected.beat_source ? `beats via ${detected.beat_source}` : null,
   ].filter(Boolean).join(" · ");
+  show("sparse-warning", Boolean(detected.sparse_melody));
 
   $("dl-pdf").href = `/api/jobs/${jobId}/file/pdf`;
   $("dl-musicxml").href = `/api/jobs/${jobId}/file/musicxml`;

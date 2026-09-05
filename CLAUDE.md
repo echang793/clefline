@@ -24,11 +24,26 @@ These are all load-bearing. Each one failed silently or misleadingly first time.
   spells to the key signature; this was the single biggest readability fix.
 - **A pickup before the first downbeat produced negative offsets** and music21
   refused to place the notes. `grid.analyze` steps the origin back whole bars.
+- **`paths.JOBS` and `pipeline.JOBS` are two different bindings**, not one. Both
+  start out pointing at the same object (`pipeline.py` does
+  `from paths import JOBS, job_dir, ...`), but `job_dir()` — used by `new_job`,
+  `get_status`, `_set_status` — resolves the bare name `JOBS` in *paths*' own
+  module globals, while `recent()` and `recover_interrupted_jobs()` resolve it in
+  *pipeline*'s. A test that only does `monkeypatch.setattr(pipeline, "JOBS", tmp_path)`
+  redirects the second group and silently leaves the first writing into the real
+  `data/jobs/` — this actually happened once, writing five stray job directories
+  into production before it was caught. Patch both `pipeline.JOBS` and `paths.JOBS`
+  to the same path, every time.
 
 ## Known limits
 
 - Melody comes out around 2.5 notes/sec on a busy pop vocal, which is denser than
   a hand-written chart. Use the Adjust panel's eighth-note grid to simplify.
-- Drum classification is heuristic: kick, snare and hi-hat are reliable; toms and
-  the ride/crash split are not.
+- Drum classification is heuristic: kick, snare and hi-hat are reliable. Toms are
+  now too (peakiness-based, see `drums.classify`); ride vs crash is not attempted
+  — there is no separate voice for it, both are engraved as one generic cymbal.
 - Chord symbols are sparse — the Viterbi smoothing favours holding a chord.
+- The vocal stem is whatever demucs separates as "vocals" — lead and backing
+  vocals are not split further, so a song with prominent harmony can occasionally
+  pull it into the melody instead of the lead line. Not fixable without a harder
+  source-separation model than this stack has.

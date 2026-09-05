@@ -7,6 +7,8 @@
   --accent: #1f5d50;
   --accent-ink: #ffffff;
   --error: #9d2f1f;
+  --warning: #8a5a00;
+  --warning-bg: #fdf3dd;
 }
 
 * { box-sizing: border-box; }
@@ -71,6 +73,10 @@ button:disabled { opacity: 0.5; cursor: default; }
 
 .hint { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
 .error { color: var(--error); font-size: 14px; margin: 10px 0 0; }
+.warning {
+  color: var(--warning); background: var(--warning-bg);
+  border-radius: 8px; padding: 10px 12px; font-size: 13px; margin: 12px 0 0;
+}
 
 .match, .requested { display: flex; gap: 12px; align-items: center; }
 .requested { padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px dashed var(--line); }
@@ -111,6 +117,7 @@ summary { cursor: pointer; font-size: 14px; color: var(--muted); }
   :root {
     --bg: #16171a; --panel: #1e2024; --ink: #ecebe8; --muted: #9a958d;
     --line: #32353b; --accent: #4db6a1; --accent-ink: #10221e; --error: #ef8a7a;
+    --warning: #e8b355; --warning-bg: #3a2f14;
   }
   input[type=url], input[type=number], select, button, .downloads a { background: #24272c; }
   /* Engravings are black ink on white paper; keep the page white so they read. */

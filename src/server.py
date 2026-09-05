@@ -5,8 +5,10 @@ personal practice; it is not meant to be exposed, and is deliberately absent
 from the vantage funnel.
 """
 
+import logging
 import os
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -20,7 +22,21 @@ import fetch  # noqa: E402
 import pipeline  # noqa: E402
 from paths import PARTS, ROOT, job_dir  # noqa: E402
 
-app = FastAPI(title="clefline")
+log = logging.getLogger("uvicorn.error")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # The job queue is in-memory and dies with the process. Anything left
+    # "queued" or "running" from before this startup is a job a prior crash
+    # or restart orphaned -- mark it interrupted before the (now-empty) queue
+    # can be asked to work on anything new.
+    if recovered := pipeline.recover_interrupted_jobs():
+        log.warning("Marked %d interrupted job(s) from a previous run as failed.", recovered)
+    yield
+
+
+app = FastAPI(title="clefline", lifespan=lifespan)
 STATIC = ROOT / "static"
 
 # Only these names are servable from a job directory, and each maps to one file.
