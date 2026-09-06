@@ -60,6 +60,10 @@ Also needs `ffmpeg` on PATH (`brew install ffmpeg`).
 .venv/bin/python src/server.py            # http://127.0.0.1:8104
 ```
 
+Installable as a PWA (an icon on your home screen / dock, not offline audio
+processing — the transcription itself always needs the network). The **Recent**
+panel on the main page lists past jobs and links back to their charts.
+
 Or transcribe from the terminal:
 
 ```bash

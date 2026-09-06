@@ -119,6 +119,40 @@ def healthz():
     return JSONResponse({"ok": True})
 
 
+# --------------------------------------------------------------------------- PWA
+#
+# Registered before the catch-all static mount below so these exact paths are
+# served here rather than falling through to it — Starlette tries routes in
+# registration order, and only /manifest.json, /favicon.ico and /sw.js need a
+# route of their own; everything else in static/ is served by the mount as-is.
+
+@app.get("/manifest.json")
+def manifest():
+    return JSONResponse({
+        "name": "clefline",
+        "short_name": "clefline",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#faf9f7",
+        "theme_color": "#1f5d50",
+        "description": "Paste a song, pick an instrument, get sheet music.",
+        "icons": [
+            {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml",
+             "purpose": "any maskable"},
+        ],
+    })
+
+
+@app.get("/favicon.ico")
+def favicon():
+    return FileResponse(STATIC / "icon.svg", media_type="image/svg+xml")
+
+
+@app.get("/sw.js")
+def service_worker():
+    return FileResponse(STATIC / "sw.js", media_type="application/javascript")
+
+
 app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")
 
 
