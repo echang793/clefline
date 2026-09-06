@@ -113,6 +113,19 @@ summary { cursor: pointer; font-size: 14px; color: var(--muted); }
   border: 1px solid var(--line); border-radius: 8px;
 }
 
+.history-list { margin-top: 12px; display: grid; gap: 8px; }
+.history-row {
+  display: flex; align-items: center; gap: 10px; min-width: 0;
+  padding: 8px 0; border-top: 1px solid var(--line);
+}
+.history-row:first-child { border-top: none; }
+.history-main { flex: 1; min-width: 0; text-align: left; background: none; border: none;
+  padding: 0; cursor: pointer; font: inherit; color: inherit; }
+.history-main:hover .history-title { color: var(--accent); }
+.history-title { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-meta { display: block; color: var(--muted); font-size: 13px; margin-top: 2px; }
+.history-meta.is-error { color: var(--error); }
+
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #16171a; --panel: #1e2024; --ink: #ecebe8; --muted: #9a958d;

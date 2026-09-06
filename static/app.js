@@ -1,6 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+const PART_NAMES = { sax: "Alto Sax", keys: "Keyboard", drums: "Drumset" };
 const KEY_NAMES = {
   "-7": "7 flats", "-6": "6 flats", "-5": "5 flats", "-4": "4 flats",
   "-3": "3 flats", "-2": "2 flats", "-1": "1 flat", "0": "No sharps or flats",
@@ -131,6 +132,7 @@ async function transcribe(part) {
   };
   if ($("sharps").value !== "") options.sharps = Number($("sharps").value);
   if ($("bpm").value !== "") options.bpm = Number($("bpm").value);
+  if ($("meter").value !== "") options.time_signature = $("meter").value;
 
   try {
     const response = await fetch("/api/jobs", {
@@ -165,18 +167,19 @@ function watch(jobId) {
       clearInterval(poller);
       show("progress-card", false);
       renderResult(jobId, status);
+      loadRecent();
     } else if (status.state === "error") {
       clearInterval(poller);
       show("progress-card", false);
       setError("job-error", status.message || "Transcription failed");
+      loadRecent();
     }
   }, 1000);
 }
 
 function renderResult(jobId, status) {
   const detected = status.detected || {};
-  const partNames = { sax: "Alto Sax", keys: "Keyboard", drums: "Drumset" };
-  $("result-title").textContent = `${partNames[status.part] || status.part} — ${
+  $("result-title").textContent = `${PART_NAMES[status.part] || status.part} — ${
     (status.meta && status.meta.title) || "Score"
   }`;
   $("detected").textContent = [
@@ -204,6 +207,57 @@ function renderResult(jobId, status) {
   show("result-card", true);
 }
 
+// ---------------------------------------------------------------- history
+
+const STATE_LABELS = { queued: "Queued", running: "In progress", error: "Failed" };
+
+async function loadRecent() {
+  let jobs;
+  try {
+    const response = await fetch("/api/jobs");
+    if (!response.ok) return;
+    ({ jobs } = await response.json());
+  } catch {
+    return; // history is a convenience; a network hiccup here should not be loud
+  }
+
+  const list = $("history-list");
+  if (!jobs.length) {
+    list.innerHTML = '<p class="hint">Nothing transcribed yet.</p>';
+    return;
+  }
+
+  list.innerHTML = "";
+  for (const job of jobs) {
+    const title = (job.meta && job.meta.title) || "Untitled";
+    const part = PART_NAMES[job.part] || job.part;
+    const isError = job.state === "error";
+    const metaText = job.state === "done"
+      ? part
+      : `${part} — ${STATE_LABELS[job.state] || job.state}`;
+
+    const row = document.createElement("div");
+    row.className = "history-row";
+    row.innerHTML = `
+      <button class="history-main" type="button">
+        <span class="history-title"></span>
+        <span class="history-meta${isError ? " is-error" : ""}"></span>
+      </button>`;
+    row.querySelector(".history-title").textContent = title;
+    row.querySelector(".history-meta").textContent = metaText;
+    row.querySelector(".history-main").addEventListener("click", () => {
+      if (job.state === "done") {
+        show("progress-card", false);
+        renderResult(job.job_id, job);
+        $("result-card").scrollIntoView({ behavior: "smooth", block: "start" });
+      } else if (job.state === "error") {
+        setError("job-error", job.message || "Transcription failed");
+      }
+    });
+    list.appendChild(row);
+  }
+}
+
 // ---------------------------------------------------------------- wiring
 
 $("find").addEventListener("click", find);
@@ -213,3 +267,8 @@ $("url").addEventListener("keydown", (event) => {
 document.querySelectorAll(".part").forEach((button) => {
   button.addEventListener("click", () => transcribe(button.dataset.part));
 });
+loadRecent();
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js").catch(() => {});
+}
