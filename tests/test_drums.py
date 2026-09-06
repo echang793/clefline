@@ -92,12 +92,29 @@ def test_a_toms_narrowband_ring_is_measurably_peakier_than_a_snares_crack():
     assert snare_features["peakiness"] < 0.2
 
 
-def test_ride_and_crash_are_not_confused_with_a_tonal_drum():
-    """Both are cymbals in this app's vocabulary (no separate ride/crash voice
-    exists), but neither should ever be peaky enough to trip the tom rule."""
+@pytest.mark.parametrize("sample,expected", [(ride(), "ride"), (crash(), "crash")])
+def test_ride_and_crash_are_told_apart(sample, expected):
+    padded = np.concatenate([sample, np.zeros(SR, dtype=np.float32)])
+    assert classify(features_at(padded, SR, 0.0)) == expected
+
+
+def test_ride_and_crash_are_never_peaky_enough_to_trip_the_tom_rule():
     for sample in (ride(), crash()):
         padded = np.concatenate([sample, np.zeros(SR, dtype=np.float32)])
-        assert classify(features_at(padded, SR, 0.0)) in ("cymbal", "hihat_open", "hihat")
+        features = features_at(padded, SR, 0.0)
+        assert features["peakiness"] <= 0.5
+        assert classify(features) != "tom"
+
+
+def test_a_rides_defined_ping_is_measurably_peakier_than_a_crashes_wash():
+    ride_features = features_at(
+        np.concatenate([ride(), np.zeros(SR, dtype=np.float32)]), SR, 0.0
+    )
+    crash_features = features_at(
+        np.concatenate([crash(), np.zeros(SR, dtype=np.float32)]), SR, 0.0
+    )
+    assert ride_features["peakiness"] > 0.05
+    assert crash_features["peakiness"] < 0.03
 
 
 def test_a_stroke_with_no_audio_does_not_crash_the_classifier():
@@ -123,6 +140,16 @@ def test_a_voice_is_not_repeated_within_one_event():
 def test_every_voice_has_a_staff_position_and_notehead():
     for spec in VOICES.values():
         assert spec["display"] and spec["notehead"]
+
+
+def test_cymbal_is_a_legacy_voice_no_longer_produced():
+    """"cymbal" stays in VOICES so a hits.json cached before the ride/crash
+    split (data/ has no automatic expiry) still renders, but classify() should
+    never emit it for a fresh stroke."""
+    assert "cymbal" in VOICES
+    for sample in (ride(), crash(), hihat()):
+        padded = np.concatenate([sample, np.zeros(SR, dtype=np.float32)])
+        assert classify(features_at(padded, SR, 0.0)) != "cymbal"
 
 
 @pytest.mark.slow

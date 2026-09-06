@@ -92,6 +92,8 @@ up periodically (dry run by default, `--yes` to actually delete):
   meter, and quantization grid, and re-renders from cached MIDI in under a
   second.
 - Drum classification is a hand-built onset classifier, not a trained model:
-  kick/snare/hi-hat are reliable, toms and the ride/crash split are shakier.
+  kick/snare/hi-hat are reliable, toms are reasonably reliable, and the
+  ride/crash split — a heuristic on top of an already-heuristic cymbal
+  detection — is the shakiest of the bunch.
 - Binds `127.0.0.1` by default. This downloads audio for personal
   transcription — the output isn't meant for redistribution.

@@ -40,8 +40,12 @@ These are all load-bearing. Each one failed silently or misleadingly first time.
 - Melody comes out around 2.5 notes/sec on a busy pop vocal, which is denser than
   a hand-written chart. Use the Adjust panel's eighth-note grid to simplify.
 - Drum classification is heuristic: kick, snare and hi-hat are reliable. Toms are
-  now too (peakiness-based, see `drums.classify`); ride vs crash is not attempted
-  — there is no separate voice for it, both are engraved as one generic cymbal.
+  now too (peakiness-based, see `drums.classify`). Ride and crash are split by the
+  same peakiness feature (ride's bell gives it a defined pitch a crash's wash
+  lacks) but on a much thinner synthetic margin (0.066-0.074 vs 0.014-0.017) --
+  the shakiest voice in the classifier. `cymbal` stays in `VOICES` as a legacy
+  fallback so hits cached before this split still render, but `classify()` no
+  longer produces it.
 - Chord symbols are sparse — the Viterbi smoothing favours holding a chord.
 - The vocal stem is whatever demucs separates as "vocals" — lead and backing
   vocals are not split further, so a song with prominent harmony can occasionally

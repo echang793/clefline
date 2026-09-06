@@ -6,8 +6,10 @@ each one from where its energy sits in the spectrum and how fast it decays.
 
 That is honest about its limits. Kick, snare and hi-hat — the great majority of
 what a drummer reads — come out reliably, because they occupy well-separated
-bands. Toms and the ride/crash distinction are much shakier: they overlap in
-both frequency and decay, and the stem is already an approximation.
+bands. Toms and the ride/crash split are shakier: they overlap in both
+frequency and decay, and the stem is already an approximation. Ride vs crash in
+particular is a secondary split on top of an already-heuristic cymbal
+detection, so expect it to be wrong more often than kick/snare/hihat/tom.
 
 `Classifier` is a protocol so a trained model can replace the heuristic without
 touching the rest of the pipeline.
@@ -26,6 +28,11 @@ VOICES = {
     "tom":        {"display": "E5", "notehead": "normal", "stem": "up"},
     "hihat":      {"display": "G5", "notehead": "x", "stem": "up"},
     "hihat_open": {"display": "G5", "notehead": "circle-x", "stem": "up"},
+    "ride":       {"display": "F5", "notehead": "x", "stem": "up"},
+    "crash":      {"display": "A5", "notehead": "x", "stem": "up"},
+    # No longer produced by classify() -- kept so a hits.json cached before the
+    # ride/crash split existed (data/ has no automatic expiry) still renders
+    # instead of silently dropping the note. build_drums() skips unknown voices.
     "cymbal":     {"display": "A5", "notehead": "x", "stem": "up"},
 }
 
@@ -120,7 +127,16 @@ def classify(features: dict) -> str:
     # that a snare has real body in the mid band and a hi-hat has almost none.
     # Cymbals then ring where hi-hats stop dead, which is what decay measures.
     if (high + vhigh) > 0.5 and mid < 0.25:
-        return "cymbal" if decay > 0.45 else ("hihat_open" if decay > 0.28 else "hihat")
+        if decay > 0.45:
+            # Ride vs crash, on top of an already-heuristic cymbal detection: a
+            # ride's bell gives it a defined pitch (the same peakiness feature
+            # the tom rule uses, just far weaker) that a crash's pure broadband
+            # wash lacks. Measured on synthetic strokes: ride 0.066-0.074,
+            # crash 0.014-0.017 -- a fair margin, but this is the shakiest
+            # voice in the classifier; expect real strokes to disagree more
+            # often than kick/snare/hihat/tom do.
+            return "ride" if peakiness > 0.035 else "crash"
+        return "hihat_open" if decay > 0.28 else "hihat"
 
     # Tom: a membrane ringing at a fundamental, not a broadband crack -- checked
     # by peakiness ahead of the snare rule below, or a higher-pitched tom's
