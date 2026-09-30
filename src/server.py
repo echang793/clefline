@@ -133,8 +133,8 @@ def manifest():
         "short_name": "clefline",
         "start_url": "/",
         "display": "standalone",
-        "background_color": "#faf9f7",
-        "theme_color": "#1f5d50",
+        "background_color": "#e7e5e4",
+        "theme_color": "#37f712",
         "description": "Paste a song, pick an instrument, get sheet music.",
         "icons": [
             {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml",

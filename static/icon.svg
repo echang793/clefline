@@ -1,15 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
-  <rect width="192" height="192" rx="42" fill="#1f5d50"/>
-  <g stroke="#faf9f7" stroke-width="7" opacity="0.55">
+  <rect width="192" height="192" rx="24" fill="#0a0b09"/>
+  <g stroke="#37f712" stroke-width="7" opacity="0.4">
     <line x1="38" y1="70" x2="154" y2="70"/>
     <line x1="38" y1="94" x2="154" y2="94"/>
     <line x1="38" y1="118" x2="154" y2="118"/>
   </g>
-  <g fill="#faf9f7">
+  <g fill="#37f712">
     <ellipse cx="72" cy="128" rx="15" ry="11" transform="rotate(-18 72 128)"/>
     <ellipse cx="126" cy="112" rx="15" ry="11" transform="rotate(-18 126 112)"/>
   </g>
-  <rect x="83" y="52" width="7" height="78" fill="#faf9f7"/>
-  <rect x="137" y="38" width="7" height="76" fill="#faf9f7"/>
-  <path d="M83 52 L144 38 L144 52 L83 66 Z" fill="#faf9f7"/>
+  <rect x="83" y="52" width="7" height="78" fill="#37f712"/>
+  <rect x="137" y="38" width="7" height="76" fill="#37f712"/>
+  <path d="M83 52 L144 38 L144 52 L83 66 Z" fill="#37f712"/>
 </svg>
