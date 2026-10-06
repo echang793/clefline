@@ -49,8 +49,11 @@ backends have no wheels for newer Pythons.
 
 ```bash
 uv venv --python 3.11 .venv
-uv pip install --python .venv/bin/python -r requirements.txt
+uv pip install --python .venv/bin/python -r requirements.txt --override overrides.txt
 ```
+
+`--override overrides.txt` is required: basic-pitch pins an old `resampy` that breaks on
+current setuptools (see the file for why).
 
 Also needs `ffmpeg` on PATH (`brew install ffmpeg`).
 
@@ -81,7 +84,7 @@ up periodically (dry run by default, `--yes` to actually delete):
 ## Test
 
 ```bash
-.venv/bin/python -m pytest tests/ -q      # synthesized audio, no network
+.venv/bin/python -m pytest tests/ -q      # synthesized audio; network tests need --run-network
 .venv/bin/ruff check src tests
 ```
 

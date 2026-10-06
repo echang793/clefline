@@ -24,16 +24,14 @@ These are all load-bearing. Each one failed silently or misleadingly first time.
   spells to the key signature; this was the single biggest readability fix.
 - **A pickup before the first downbeat produced negative offsets** and music21
   refused to place the notes. `grid.analyze` steps the origin back whole bars.
-- **`paths.JOBS` and `pipeline.JOBS` are two different bindings**, not one. Both
-  start out pointing at the same object (`pipeline.py` does
-  `from paths import JOBS, job_dir, ...`), but `job_dir()` — used by `new_job`,
-  `get_status`, `_set_status` — resolves the bare name `JOBS` in *paths*' own
-  module globals, while `recent()` and `recover_interrupted_jobs()` resolve it in
-  *pipeline*'s. A test that only does `monkeypatch.setattr(pipeline, "JOBS", tmp_path)`
-  redirects the second group and silently leaves the first writing into the real
-  `data/jobs/` — this actually happened once, writing five stray job directories
-  into production before it was caught. Patch both `pipeline.JOBS` and `paths.JOBS`
-  to the same path, every time.
+- **Patch `paths.JOBS`/`paths.SOURCES`, never a copy.** The data directories have one
+  binding, in `paths`; `pipeline` reads `paths.JOBS` through the module. (It used to do
+  `from paths import JOBS`, a second binding: patching one half split reads from writes
+  and once left stray job directories in production.) `tests/conftest.py` redirects them
+  to a per-test temp dir for every test, so nothing touches real `data/`.
+- **requirements.txt alone cannot be installed from scratch:** basic-pitch 0.4.0 declares
+  `resampy<0.4.3`, which we must override (`overrides.txt`) because resampy<0.4.3 needs
+  the `pkg_resources` that setuptools 81+ removed. Always install with `--override`.
 
 ## Known limits
 

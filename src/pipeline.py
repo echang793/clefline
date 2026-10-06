@@ -25,11 +25,12 @@ import fetch
 import grid as grid_module
 import harmony as harmony_module
 import notes as notes_module
+import paths
 import quantize as quantize_module
 import render as render_module
 import score as score_module
 import separate as separate_module
-from paths import JOBS, job_dir, read_json, source_dir, write_json
+from paths import job_dir, read_json, source_dir, write_json
 
 # Rough share of total runtime, so the progress bar moves at a believable pace.
 STAGES = [
@@ -332,7 +333,7 @@ def _ensure_worker() -> None:
 
 
 def recent(limit: int = 25) -> list[dict]:
-    jobs = [read_json(p / "status.json") for p in JOBS.glob("*") if p.is_dir()]
+    jobs = [read_json(p / "status.json") for p in paths.JOBS.glob("*") if p.is_dir()]
     jobs = [j for j in jobs if j]
     jobs.sort(key=lambda j: j.get("created", 0), reverse=True)
     return jobs[:limit]

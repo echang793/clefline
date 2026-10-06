@@ -1,0 +1,4 @@
+# basic-pitch 0.4.0 declares resampy<0.4.3, but resampy<0.4.3 imports pkg_resources,
+# which setuptools 81+ removed. 0.4.3+ fixes that and works fine with basic-pitch
+# (verified: full test suite passes). uv ignores the dependency cap via --override.
+resampy>=0.4.3
