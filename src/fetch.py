@@ -19,7 +19,8 @@ import httpx
 import soundfile as sf
 
 import config
-from paths import source_dir
+import procs
+from paths import require_free_space, source_dir
 
 YT_ID = re.compile(
     r"(?:youtu\.be/|youtube\.com/(?:watch\?(?:.*&)?v=|embed/|shorts/|live/))([A-Za-z0-9_-]{11})"
@@ -289,8 +290,9 @@ def download(source_id: str, force: bool = False):
     if audio_path.exists() and not force:
         return audio_path
 
+    require_free_space()
     try:
-        proc = subprocess.run(
+        proc = procs.run(
             [
                 *YTDLP, "-f", "bestaudio/best", "--no-warnings", "--no-playlist",
                 "--match-filter", f"duration<={config.MAX_DURATION_SECONDS}",
@@ -300,9 +302,9 @@ def download(source_id: str, force: bool = False):
                 "-o", str(directory / "audio.%(ext)s"),
                 f"https://www.youtube.com/watch?v={source_id}",
             ],
-            capture_output=True, text=True, timeout=900,
+            timeout=900,
         )
-    except subprocess.TimeoutExpired:
+    except procs.TimedOut:
         raise FetchError("The download timed out after 15 minutes -- try again.") from None
 
     if not audio_path.exists():

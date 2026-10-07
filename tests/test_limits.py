@@ -11,6 +11,7 @@ import config
 import fetch
 import paths
 import pipeline
+import procs
 import separate
 from fetch import Candidate, FetchError
 
@@ -72,7 +73,7 @@ def test_spotify_with_only_over_cap_matches_is_refused(monkeypatch):
 # ---------------------------------------------------------------- download
 
 def _fake_run_writing(seconds, captured=None):
-    """A stand-in for the yt-dlp subprocess that "downloads" a real FLAC."""
+    """A stand-in for procs.run that "downloads" a real FLAC."""
     def run(cmd, **kwargs):
         if captured is not None:
             captured.append(cmd)
@@ -85,7 +86,7 @@ def _fake_run_writing(seconds, captured=None):
 def test_download_asks_ytdlp_to_enforce_the_cap_itself(monkeypatch):
     """POST /api/jobs can skip /api/resolve, so the download is the real gate."""
     captured = []
-    monkeypatch.setattr(subprocess, "run", _fake_run_writing(1, captured))
+    monkeypatch.setattr(procs, "run", _fake_run_writing(1, captured))
     fetch.download("QDYfEBY9NM4")
     cmd = captured[0]
     assert "--match-filter" in cmd
@@ -95,14 +96,14 @@ def test_download_asks_ytdlp_to_enforce_the_cap_itself(monkeypatch):
 
 def test_a_download_longer_than_the_cap_is_refused_and_deleted(monkeypatch):
     monkeypatch.setattr(config, "MAX_DURATION_SECONDS", 2)
-    monkeypatch.setattr(subprocess, "run", _fake_run_writing(5))
+    monkeypatch.setattr(procs, "run", _fake_run_writing(5))
     with pytest.raises(FetchError, match="limit"):
         fetch.download("QDYfEBY9NM4")
     assert not (paths.SOURCES / "QDYfEBY9NM4" / "audio.flac").exists()
 
 
 def test_a_download_within_the_cap_is_kept(monkeypatch):
-    monkeypatch.setattr(subprocess, "run", _fake_run_writing(1))
+    monkeypatch.setattr(procs, "run", _fake_run_writing(1))
     assert fetch.download("QDYfEBY9NM4").exists()
 
 
@@ -111,16 +112,16 @@ def test_a_video_filtered_out_by_ytdlp_reports_the_limit_not_a_missing_file(monk
         return subprocess.CompletedProcess(
             cmd, 0, "[download] X does not pass filter (duration<=900), skipping ..", "")
 
-    monkeypatch.setattr(subprocess, "run", skipped)
+    monkeypatch.setattr(procs, "run", skipped)
     with pytest.raises(FetchError, match="limit"):
         fetch.download("QDYfEBY9NM4")
 
 
 def test_a_download_timeout_is_a_clean_error_without_the_command_line(monkeypatch):
     def hang(cmd, **kwargs):
-        raise subprocess.TimeoutExpired(cmd, 900)
+        raise procs.TimedOut(f"{cmd} ran too long")
 
-    monkeypatch.setattr(subprocess, "run", hang)
+    monkeypatch.setattr(procs, "run", hang)
     with pytest.raises(FetchError) as caught:
         fetch.download("QDYfEBY9NM4")
     assert sys.executable not in str(caught.value)
@@ -152,9 +153,9 @@ def test_ytdlp_failure_shows_the_last_stderr_line_not_a_python_list(monkeypatch)
 
 def test_a_demucs_timeout_is_a_clean_error_without_the_command_line(monkeypatch, tmp_path):
     def hang(cmd, **kwargs):
-        raise subprocess.TimeoutExpired(cmd, 3600)
+        raise procs.TimedOut(f"{cmd} ran too long")
 
-    monkeypatch.setattr(subprocess, "run", hang)
+    monkeypatch.setattr(procs, "run", hang)
     with pytest.raises(separate.SeparationError) as caught:
         separate.separate("QDYfEBY9NM4", tmp_path / "audio.flac")
     assert sys.executable not in str(caught.value)
@@ -197,3 +198,62 @@ def test_a_domain_error_message_contains_no_absolute_paths(monkeypatch):
     monkeypatch.setattr(pipeline, "prepare", refuse)
     pipeline._run(job_id)
     assert str(paths.ROOT) not in pipeline.get_status(job_id)["message"]
+
+
+# ------------------------------------------------------------------- disk guard
+
+def _must_not_run(cmd, **kwargs):
+    raise AssertionError("should have refused before starting a subprocess")
+
+
+def test_low_disk_space_is_a_clean_error_before_downloading(monkeypatch):
+    monkeypatch.setattr(config, "MIN_FREE_GB", 10**6)
+    monkeypatch.setattr(procs, "run", _must_not_run)
+    with pytest.raises(paths.LowDisk, match="free"):
+        fetch.download("QDYfEBY9NM4")
+
+
+def test_low_disk_space_is_a_clean_error_before_separating(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "MIN_FREE_GB", 10**6)
+    monkeypatch.setattr(procs, "run", _must_not_run)
+    with pytest.raises(paths.LowDisk):
+        separate.separate("QDYfEBY9NM4", tmp_path / "audio.flac")
+
+
+def test_a_cached_download_needs_no_free_space(monkeypatch):
+    """The guard is for work about to be done; a cache hit does none."""
+    cached = paths.source_dir("QDYfEBY9NM4") / "audio.flac"
+    cached.write_bytes(b"x")
+    monkeypatch.setattr(config, "MIN_FREE_GB", 10**6)
+    assert fetch.download("QDYfEBY9NM4") == cached
+
+
+def test_the_default_free_space_floor_is_three_gigabytes():
+    assert config.MIN_FREE_GB == 3
+
+
+def test_a_low_disk_message_does_not_expose_the_data_path(monkeypatch):
+    monkeypatch.setattr(config, "MIN_FREE_GB", 10**6)
+    with pytest.raises(paths.LowDisk) as caught:
+        paths.require_free_space()
+    assert str(paths.ROOT) not in str(caught.value)
+
+
+# --------------------------------------------------------- stale separation dir
+
+def test_a_stale_demucs_work_dir_is_cleared_before_a_new_run(monkeypatch, tmp_path):
+    """A killed run leaves data/sources/<id>/_demucs behind; the next run must
+    not write into (and mix with) it."""
+    stale = paths.source_dir("QDYfEBY9NM4") / "_demucs" / "leftover.txt"
+    stale.parent.mkdir()
+    stale.write_text("old")
+    seen = {}
+
+    def fake(cmd, **kwargs):
+        seen["stale_present"] = stale.exists()
+        return subprocess.CompletedProcess(cmd, 1, "", "demucs failed")
+
+    monkeypatch.setattr(procs, "run", fake)
+    with pytest.raises(separate.SeparationError):
+        separate.separate("QDYfEBY9NM4", tmp_path / "audio.flac")
+    assert seen["stale_present"] is False

@@ -1,6 +1,7 @@
 """The HTTP API: input validation, no side effects on reads, no internals leaked."""
 
 import json
+import queue
 import time
 
 import pytest
@@ -18,6 +19,8 @@ VALID = {"source_id": "QDYfEBY9NM4", "part": "sax", "meta": {"title": "t"}, "opt
 @pytest.fixture(autouse=True)
 def _no_worker(monkeypatch):
     monkeypatch.setattr(pipeline, "_ensure_worker", lambda: None)
+    monkeypatch.setattr(pipeline, "_work", queue.Queue())
+    monkeypatch.setattr(pipeline, "_cancelled", set())
 
 
 def _post(**changes):
@@ -207,3 +210,37 @@ def test_a_finished_jobs_status_exposes_no_filesystem_paths():
         assert str(paths.ROOT) not in response.text
         assert "/Users/" not in response.text
     assert client.get("/api/jobs/finished").json()["artifacts"] == {"page_count": 2}
+
+
+# ------------------------------------------------------------------- cancelling
+
+def test_cancelling_a_queued_job_over_http():
+    job_id = _post().json()["job_id"]
+    response = client.post(f"/api/jobs/{job_id}/cancel")
+    assert response.status_code == 200
+    assert response.json()["state"] == "cancelled"
+    assert client.get(f"/api/jobs/{job_id}").json()["state"] == "cancelled"
+
+
+def test_cancelling_an_unknown_job_is_a_404_and_creates_nothing():
+    assert client.post("/api/jobs/zzzzzzzzzzzz/cancel").status_code == 404
+    assert client.post("/api/jobs/a.b/cancel").status_code == 404
+    assert not paths.JOBS.exists() or not any(paths.JOBS.iterdir())
+
+
+def test_cancelling_a_finished_job_is_a_409():
+    paths.JOBS.mkdir(parents=True)
+    (paths.JOBS / "finished").mkdir()
+    (paths.JOBS / "finished" / "status.json").write_text(json.dumps({
+        "job_id": "finished", "state": "done", "created": time.time(),
+    }))
+    response = client.post("/api/jobs/finished/cancel")
+    assert response.status_code == 409
+    assert client.get("/api/jobs/finished").json()["state"] == "done"
+
+
+def test_a_queued_status_says_how_many_jobs_are_ahead():
+    first = _post(source_id="AAAAAAAAAAA").json()["job_id"]
+    second = _post(source_id="BBBBBBBBBBB").json()["job_id"]
+    assert client.get(f"/api/jobs/{first}").json()["ahead"] == 0
+    assert client.get(f"/api/jobs/{second}").json()["ahead"] == 1

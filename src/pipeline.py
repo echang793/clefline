@@ -13,6 +13,7 @@ The split that matters:
 instrument skips straight to `engrave`.
 """
 
+import logging
 import queue
 import threading
 import time
@@ -26,6 +27,7 @@ import grid as grid_module
 import harmony as harmony_module
 import notes as notes_module
 import paths
+import procs
 import quantize as quantize_module
 import render as render_module
 import score as score_module
@@ -42,9 +44,20 @@ STAGES = [
     ("engrave", "Engraving the score", 0.05),
 ]
 
+log = logging.getLogger("clefline.pipeline")
+
 _work: "queue.Queue[str]" = queue.Queue()
 _worker: threading.Thread | None = None
-_lock = threading.Lock()
+_lock = threading.Lock()          # starting the worker thread
+_submit_lock = threading.Lock()   # makes "is there already a job for this?" + "create it" atomic
+_cancelled: set[str] = set()      # jobs the user cancelled that the worker has not yet wound down
+_stop = threading.Event()         # the server is shutting down
+_running: str | None = None       # the job the worker is on right now
+
+# A job that was mid-run when the server died is resumed on the next start. One
+# that has already been mid-run twice is not: it is what killed the server.
+MAX_ATTEMPTS = 2
+TERMINAL = ("done", "error", "cancelled")
 
 
 # --------------------------------------------------------------------------- status
@@ -67,6 +80,15 @@ def _set_status(job_id: str, **fields) -> None:
     current = get_status(job_id)
     current.update(fields, job_id=job_id, updated=time.time())
     write_json(status_path(job_id), current)
+
+
+def _safe_status(job_id: str, **fields) -> None:
+    """_set_status for error paths: recording a failure must not itself be able to
+    fail (disk full) and take the worker down with it."""
+    try:
+        _set_status(job_id, **fields)
+    except Exception:
+        log.exception("could not record status for job %s", job_id)
 
 
 def _progress_through(stage: str) -> float:
@@ -225,111 +247,208 @@ def _find_reusable(source_id: str, part: str, options: dict) -> str | None:
     click on Find, two browser tabs, a page refresh that resubmits. Reusing
     the existing job instead of starting a second one saves anywhere from
     ~20 seconds (song already cached) to a couple of minutes (it isn't). A
-    job that errored is never reused: that request is exactly the one to
-    retry, not to hand back the same failure again.
+    job that errored or was cancelled is never reused: that request is exactly
+    the one to retry, not to hand back the same failure again.
     """
     for job in recent(limit=100):
         if (job.get("source_id") == source_id and job.get("part") == part
-                and job.get("options") == options and job.get("state") != "error"):
+                and job.get("options") == options
+                and job.get("state") not in ("error", "cancelled")):
             return job.get("job_id")
     return None
 
 
 def new_job(source_id: str, part: str, meta: dict, options: dict | None = None) -> str:
     options = options or {}
-    if reusable := _find_reusable(source_id, part, options):
-        return reusable
+    # Two identical POSTs run in parallel threads; without this they could both
+    # miss each other's job and each create their own.
+    with _submit_lock:
+        if reusable := _find_reusable(source_id, part, options):
+            return reusable
 
-    job_id = uuid.uuid4().hex[:12]
-    write_json(
-        status_path(job_id),
-        {
-            "job_id": job_id, "source_id": source_id, "part": part, "meta": meta,
-            "options": options, "state": "queued", "stage": "queued",
-            "message": "Waiting to start", "progress": 0.0, "created": time.time(),
-        },
-    )
-    _work.put(job_id)
+        job_id = uuid.uuid4().hex[:12]
+        write_json(
+            status_path(job_id),
+            {
+                "job_id": job_id, "source_id": source_id, "part": part, "meta": meta,
+                "options": options, "state": "queued", "stage": "queued",
+                "message": "Waiting to start", "progress": 0.0, "created": time.time(),
+            },
+        )
+        _work.put(job_id)
     _ensure_worker()
     return job_id
 
 
-def recover_interrupted_jobs() -> int:
-    """Mark anything left "queued" or "running" from before this process
-    started as interrupted, and return how many were found.
+def jobs_ahead(job_id: str) -> int | None:
+    """How many jobs will run before this one (the running one included), or
+    None if it is not waiting in the queue."""
+    with _work.mutex:
+        waiting = [j for j in _work.queue if j not in _cancelled or j == job_id]
+    if job_id not in waiting:
+        return None
+    return waiting.index(job_id) + (1 if _running else 0)
 
-    The job queue is an in-memory queue.Queue: it dies with the process. A
-    crash or restart mid-job leaves that job's status.json frozen at whatever
-    percentage it was showing, forever -- no error, no retry path, just a
-    progress bar in the UI that never moves again. Called once at server
-    startup, before anything can be queued against the (now-empty) new queue.
+
+def cancel(job_id: str) -> str | None:
+    """Ask for a job to stop. Returns its resulting state, or None if unknown.
+
+    A queued job is marked cancelled at once. A running one is flagged and winds
+    down within a moment (a subprocess is killed immediately; in-process stages
+    stop at their next boundary). A finished job is left as it was.
     """
-    count = 0
-    for job in recent(limit=1000):
-        if job.get("state") in ("queued", "running"):
-            _set_status(
-                job["job_id"], state="error",
-                message="Interrupted by a server restart -- try again.",
+    status = get_status(job_id)
+    state = status.get("state")
+    if state == "unknown":
+        return None
+    if state == "queued":
+        _cancelled.add(job_id)   # first, so a worker about to pick it up still sees it
+        _safe_status(job_id, state="cancelled", message="Cancelled")
+        return "cancelled"
+    if state == "running":
+        _cancelled.add(job_id)
+        _safe_status(job_id, message="Cancelling…")
+        return "running"
+    return state
+
+
+def resume_interrupted_jobs() -> int:
+    """Put every job that was "queued" or "running" when the last process died
+    back on the queue, oldest first, and return how many were resumed.
+
+    The queue is in-memory and dies with the process, which used to leave those
+    jobs frozen at whatever percentage they showed (and later, to fail them all).
+    Every stage is idempotent and artifact-keyed, so a resumed job picks up where
+    it stopped. A job already started MAX_ATTEMPTS times is failed instead: if it
+    is what keeps killing the server, resuming it would loop forever.
+    """
+    orphans = sorted(
+        (j for j in recent(limit=None) if j.get("state") in ("queued", "running")),
+        key=lambda j: j.get("created", 0),
+    )
+    resumed = 0
+    for job in orphans:
+        job_id = job["job_id"]
+        if job.get("attempts", 0) >= MAX_ATTEMPTS:
+            _safe_status(
+                job_id, state="error",
+                message="This job crashed the server twice, so it was not retried -- "
+                        "the recording may be too heavy for this machine.",
             )
-            count += 1
-    return count
+            continue
+        _safe_status(job_id, state="queued", message="Resuming after a restart")
+        _work.put(job_id)
+        resumed += 1
+    return resumed
+
+
+def startup() -> int:
+    """Called once when the server starts: resume orphans and start the worker."""
+    _stop.clear()
+    # Before resuming anything: a child left running by a server that was killed
+    # would otherwise fight the resumed job over the same directory.
+    if reaped := procs.reap_orphans():
+        log.warning("Killed %d child process(es) orphaned by the last shutdown.", reaped)
+    resumed = resume_interrupted_jobs()
+    if resumed:
+        _ensure_worker()
+    return resumed
+
+
+def shutdown(timeout: float = 10.0) -> None:
+    """Called when the server stops. Kills the running job's subprocess (leaving
+    the job "running", so the next start resumes it) and waits for the worker."""
+    _stop.set()
+    worker = _worker
+    if worker is not None and worker.is_alive():
+        worker.join(timeout)
 
 
 def _run(job_id: str) -> None:
+    global _running
     job = get_status(job_id)
+    if job_id in _cancelled or job.get("state") in TERMINAL:
+        # Cancelled while it waited (or a stale duplicate queue entry): nothing to do.
+        _cancelled.discard(job_id)
+        return
+
     labels = {name: label for name, label, _ in STAGES}
 
     def on_stage(name: str) -> None:
+        procs.check_cancelled()
         _set_status(job_id, stage=name, message=labels.get(name, name),
                     progress=_progress_through(name))
 
+    _running = job_id
     try:
-        _set_status(job_id, state="running")
-        prepared = prepare(job["source_id"], on_stage)
-        on_stage("engrave")
-        artifacts = engrave(job_id, job["part"], prepared, job.get("meta", {}),
-                            job.get("options", {}))
+        with procs.scope(lambda: job_id in _cancelled or _stop.is_set()):
+            _set_status(job_id, state="running", attempts=job.get("attempts", 0) + 1)
+            prepared = prepare(job["source_id"], on_stage)
+            on_stage("engrave")
+            artifacts = engrave(job_id, job["part"], prepared, job.get("meta", {}),
+                                job.get("options", {}))
 
-        detected = {
-            "tempo": prepared["grid"].tempo,
-            "time_signature": prepared["grid"].time_signature,
-            "key": prepared["harmony"].get("key"),
-            "sharps": prepared["harmony"].get("sharps"),
-            "swing": prepared["melody"].get("swing"),
-            "beat_source": prepared["grid"].source,
-        }
-        # Only sax and keys read the melody; a drum chart has nothing to do
-        # with how much of the song the vocal stem covered.
-        coverage = prepared["melody"].get("coverage", 1.0)
-        if job["part"] in ("sax", "keys") and coverage < SPARSE_MELODY_THRESHOLD:
-            detected["sparse_melody"] = True
+            detected = {
+                "tempo": prepared["grid"].tempo,
+                "time_signature": prepared["grid"].time_signature,
+                "key": prepared["harmony"].get("key"),
+                "sharps": prepared["harmony"].get("sharps"),
+                "swing": prepared["melody"].get("swing"),
+                "beat_source": prepared["grid"].source,
+            }
+            # Only sax and keys read the melody; a drum chart has nothing to do
+            # with how much of the song the vocal stem covered.
+            coverage = prepared["melody"].get("coverage", 1.0)
+            if job["part"] in ("sax", "keys") and coverage < SPARSE_MELODY_THRESHOLD:
+                detected["sparse_melody"] = True
 
-        _set_status(job_id, state="done", stage="done", progress=1.0,
-                    message="Ready", artifacts=artifacts, detected=detected)
-    except (fetch.FetchError, separate_module.SeparationError, RuntimeError, ValueError) as error:
+            _set_status(job_id, state="done", stage="done", progress=1.0,
+                        message="Ready", artifacts=artifacts, detected=detected)
+    except procs.Cancelled:
+        if job_id in _cancelled:
+            _safe_status(job_id, state="cancelled", message="Cancelled")
+        else:
+            # Server shutdown, not the user giving up: leave the job "running" so
+            # the next start resumes it.
+            log.info("job %s interrupted by shutdown; it will resume on restart", job_id)
+    except (fetch.FetchError, separate_module.SeparationError, paths.LowDisk,
+            RuntimeError, ValueError) as error:
         # These already read as a clear "what and why" -- fetch/separation
         # failures and the page-size/verovio-parse checks are all raised with
         # a human-facing message on purpose. Shown as-is.
-        _set_status(job_id, state="error",
-                    message=scrub(str(error)) or type(error).__name__,
-                    traceback=traceback.format_exc()[-2000:])
+        _safe_status(job_id, state="error",
+                     message=scrub(str(error)) or type(error).__name__,
+                     traceback=traceback.format_exc()[-2000:])
     except Exception as error:
         # Anything else is a genuine surprise -- something inside torch,
         # librosa or music21 that this pipeline doesn't have a specific
         # message for. Framed as unexpected rather than shown bare, so it
         # doesn't read as if the app understood exactly what went wrong.
-        _set_status(
+        _safe_status(
             job_id, state="error",
             message="Unexpected error during transcription: "
                     + (scrub(str(error)) or type(error).__name__),
             traceback=traceback.format_exc()[-2000:],
         )
+    finally:
+        _cancelled.discard(job_id)
+        _running = None
 
 
 def _loop() -> None:
-    while True:
-        _run(_work.get())
-        _work.task_done()
+    while not _stop.is_set():
+        try:
+            job_id = _work.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        try:
+            _run(job_id)
+        except Exception:
+            # _run records its own failures; this is the last line of defence so
+            # that nothing a job does can kill the thread every later job needs.
+            log.exception("job %s crashed the worker loop", job_id)
+        finally:
+            _work.task_done()
 
 
 def _ensure_worker() -> None:
@@ -340,7 +459,7 @@ def _ensure_worker() -> None:
             _worker.start()
 
 
-def recent(limit: int = 25) -> list[dict]:
+def recent(limit: int | None = 25) -> list[dict]:
     jobs = [read_json(p / "status.json") for p in paths.JOBS.glob("*") if p.is_dir()]
     jobs = [j for j in jobs if j]
     jobs.sort(key=lambda j: j.get("created", 0), reverse=True)

@@ -1,15 +1,19 @@
 """pipeline: option threading, crash recovery, dedup, and sparse-melody warnings."""
 
 import json
+import queue
 import re
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
+import paths
 import pipeline
+import procs
 from grid import Grid
-from pipeline import engrave, melody_coverage, new_job, recover_interrupted_jobs
+from pipeline import engrave, melody_coverage, new_job, resume_interrupted_jobs
 
 
 @pytest.fixture(autouse=True)
@@ -26,10 +30,12 @@ def _isolated_jobs_dir(tmp_path, monkeypatch):
     concurrently with the test's own direct call to _run() -- a race on one
     status.json.
     """
-    import paths
-
     monkeypatch.setattr(paths, "JOBS", tmp_path)
     monkeypatch.setattr(pipeline, "_ensure_worker", lambda: None)
+    monkeypatch.setattr(pipeline, "_work", queue.Queue())
+    monkeypatch.setattr(pipeline, "_cancelled", set())
+    monkeypatch.setattr(pipeline, "_stop", threading.Event())
+    monkeypatch.setattr(pipeline, "_running", None)
 
 
 def _write_status(jobs_dir, job_id, **fields):
@@ -40,37 +46,274 @@ def _write_status(jobs_dir, job_id, **fields):
     return payload
 
 
-# --------------------------------------------------------------- crash recovery
+# ------------------------------------------------------------------- resume
 
-@pytest.mark.parametrize("state", ["queued", "running"])
-def test_interrupted_jobs_are_marked_as_errors(tmp_path, monkeypatch, state):
-    """Regression: the job queue is in-memory and dies with the process. A job
-    still "running" when the server restarts used to stay that way forever --
-    a progress bar that never moves again, no error, no retry path."""
-    _write_status(tmp_path, "stuck-job", state=state, source_id="x", part="sax")
+def _queued():
+    return list(pipeline._work.queue)
 
-    count = recover_interrupted_jobs()
 
-    assert count == 1
+@pytest.mark.parametrize("state,attempts", [("queued", 0), ("running", 1)])
+def test_interrupted_jobs_are_resumed_not_failed(tmp_path, state, attempts):
+    """The queue is in-memory and dies with the process. Failing every
+    in-flight job on restart threw away work the idempotent, artifact-keyed
+    stages could simply pick back up -- so resume them."""
+    _write_status(tmp_path, "stuck-job", state=state, attempts=attempts,
+                  source_id="song-1", part="sax", options={})
+
+    assert resume_interrupted_jobs() == 1
+
+    assert _queued() == ["stuck-job"]
     status = pipeline.get_status("stuck-job")
+    assert status["state"] == "queued"
+    assert "resum" in status["message"].lower()
+
+
+def test_a_job_that_already_crashed_the_server_twice_is_failed_not_looped(tmp_path):
+    """A job that OOMs the process would otherwise crash it again on every
+    restart, forever."""
+    _write_status(tmp_path, "poison", state="running", attempts=2,
+                  source_id="song-1", part="sax", options={})
+
+    assert resume_interrupted_jobs() == 0
+
+    assert _queued() == []
+    status = pipeline.get_status("poison")
     assert status["state"] == "error"
-    assert "restart" in status["message"].lower()
+    assert "twice" in status["message"].lower()
 
 
-@pytest.mark.parametrize("state", ["done", "error"])
-def test_finished_jobs_are_left_alone_by_recovery(tmp_path, monkeypatch, state):
+def test_resumed_jobs_keep_their_original_order(tmp_path):
+    now = time.time()
+    for name, created in (("third", now), ("first", now - 200), ("second", now - 100)):
+        _write_status(tmp_path, name, state="queued", created=created, source_id="s", part="sax")
+
+    resume_interrupted_jobs()
+
+    assert _queued() == ["first", "second", "third"]
+
+
+@pytest.mark.parametrize("state", ["done", "error", "cancelled"])
+def test_finished_jobs_are_left_alone_by_resume(tmp_path, state):
     _write_status(
         tmp_path, "finished-job", state=state, message="original", source_id="x", part="sax",
     )
 
-    count = recover_interrupted_jobs()
+    assert resume_interrupted_jobs() == 0
 
-    assert count == 0
+    assert _queued() == []
     assert pipeline.get_status("finished-job")["message"] == "original"
 
 
-def test_recovery_on_an_empty_jobs_directory_does_nothing(tmp_path, monkeypatch):
-    assert recover_interrupted_jobs() == 0
+def test_resume_finds_every_orphan_not_just_the_newest_thousand(tmp_path):
+    for index in range(1100):
+        _write_status(tmp_path, f"job{index:04d}", state="queued", source_id="s", part="sax")
+    assert resume_interrupted_jobs() == 1100
+
+
+def test_resuming_an_empty_jobs_directory_does_nothing():
+    assert resume_interrupted_jobs() == 0
+
+
+def test_starting_a_job_counts_an_attempt(monkeypatch):
+    monkeypatch.setattr(pipeline, "prepare", lambda source_id, on_stage: _prepared())
+    job_id = new_job("song-1", "sax", {"title": "t"}, {})
+    pipeline._run(job_id)
+    assert pipeline.get_status(job_id)["attempts"] == 1
+
+
+# -------------------------------------------------------------------- cancel
+
+def _never_called(*args, **kwargs):
+    raise AssertionError("a cancelled job must not run")
+
+
+def test_cancelling_a_queued_job_marks_it_cancelled_and_the_worker_skips_it(monkeypatch):
+    job_id = new_job("song-1", "sax", {"title": "t"}, {})
+
+    assert pipeline.cancel(job_id) == "cancelled"
+    assert pipeline.get_status(job_id)["state"] == "cancelled"
+
+    monkeypatch.setattr(pipeline, "prepare", _never_called)
+    pipeline._run(job_id)  # what the worker does when it later dequeues it
+    assert pipeline.get_status(job_id)["state"] == "cancelled"
+
+
+def test_cancelling_a_running_job_stops_it(monkeypatch):
+    started = threading.Event()
+
+    def endless(source_id, on_stage):
+        started.set()
+        while True:
+            on_stage("separate")  # a stage boundary: where a cancel is noticed
+            time.sleep(0.01)
+
+    monkeypatch.setattr(pipeline, "prepare", endless)
+    job_id = new_job("song-1", "sax", {"title": "t"}, {})
+    worker = threading.Thread(target=pipeline._run, args=(job_id,))
+    worker.start()
+    assert started.wait(5)
+
+    pipeline.cancel(job_id)
+    worker.join(5)
+
+    assert not worker.is_alive()
+    assert pipeline.get_status(job_id)["state"] == "cancelled"
+
+
+def test_cancelling_a_running_job_kills_its_subprocess(monkeypatch, tmp_path):
+    """The cancel flag reaches a blocking subprocess through procs' scope, not
+    just at stage boundaries -- demucs runs for minutes in one stage."""
+    import sys
+
+    pidfile = tmp_path / "pid"
+    code = f"import os, time; open({str(pidfile)!r}, 'w').write(str(os.getpid())); time.sleep(60)"
+
+    def separating(source_id, on_stage):
+        procs.run([sys.executable, "-c", code], timeout=120)
+
+    monkeypatch.setattr(pipeline, "prepare", separating)
+    job_id = new_job("song-1", "sax", {"title": "t"}, {})
+    worker = threading.Thread(target=pipeline._run, args=(job_id,))
+    worker.start()
+    deadline = time.time() + 10
+    while not pidfile.exists() and time.time() < deadline:
+        time.sleep(0.05)
+    assert pidfile.exists()
+
+    pipeline.cancel(job_id)
+    worker.join(10)
+
+    assert not worker.is_alive()
+    assert pipeline.get_status(job_id)["state"] == "cancelled"
+    import os
+
+    time.sleep(0.2)
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pidfile.read_text()), 0)
+
+
+def test_cancelling_a_finished_job_changes_nothing(tmp_path):
+    _write_status(tmp_path, "done-job", state="done", message="Ready", source_id="s", part="sax")
+    assert pipeline.cancel("done-job") == "done"
+    assert pipeline.get_status("done-job")["message"] == "Ready"
+
+
+def test_cancelling_an_unknown_job_is_none():
+    assert pipeline.cancel("nope-nope") is None
+    assert pipeline.cancel("../etc") is None
+
+
+def test_a_shutdown_leaves_the_running_job_resumable_not_cancelled(monkeypatch):
+    """Shutdown interrupts the work but is not the user giving up on it: the
+    job must stay "running" so the next start resumes it."""
+    started = threading.Event()
+
+    def endless(source_id, on_stage):
+        started.set()
+        while True:
+            on_stage("separate")
+            time.sleep(0.01)
+
+    monkeypatch.setattr(pipeline, "prepare", endless)
+    job_id = new_job("song-1", "sax", {"title": "t"}, {})
+    worker = threading.Thread(target=pipeline._run, args=(job_id,))
+    worker.start()
+    assert started.wait(5)
+
+    pipeline.shutdown()
+    worker.join(5)
+
+    assert not worker.is_alive()
+    assert pipeline.get_status(job_id)["state"] == "running"
+
+
+# ------------------------------------------------------------ worker survival
+
+def test_a_failing_status_write_does_not_escape_run(monkeypatch):
+    """Disk full: the handler that records the error can fail too. That used to
+    kill the worker thread and leave the job "running" forever."""
+    def refuse(job_id):
+        raise FetchErrorStandIn("download failed")
+
+    monkeypatch.setattr(pipeline, "prepare", lambda source_id, on_stage: refuse("x"))
+    job_id = new_job("song-1", "sax", {"title": "t"}, {})
+
+    def full_disk(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(pipeline, "_set_status", full_disk)
+    pipeline._run(job_id)  # must not raise
+
+
+class FetchErrorStandIn(RuntimeError):
+    pass
+
+
+def test_the_worker_loop_survives_a_job_that_blows_up(monkeypatch):
+    first = new_job("song-1", "sax", {"title": "a"}, {})
+    second = new_job("song-2", "sax", {"title": "b"}, {})
+    calls = []
+
+    def flaky(job_id):
+        calls.append(job_id)
+        if len(calls) == 1:
+            raise OSError(28, "No space left on device")
+        pipeline._stop.set()
+
+    monkeypatch.setattr(pipeline, "_run", flaky)
+    worker = threading.Thread(target=pipeline._loop)
+    worker.start()
+    worker.join(10)
+
+    assert not worker.is_alive()
+    assert calls == [first, second]
+    assert pipeline._work.unfinished_tasks == 0
+
+
+# ---------------------------------------------------------------- dedup race
+
+def test_concurrent_identical_submissions_create_one_job(tmp_path, monkeypatch):
+    """Two identical POSTs run in parallel threads; both used to miss the
+    other's job in _find_reusable and each create their own."""
+    real = pipeline._find_reusable
+
+    def slow(*args, **kwargs):
+        found = real(*args, **kwargs)
+        time.sleep(0.05)   # widen the check-then-create window
+        return found
+
+    monkeypatch.setattr(pipeline, "_find_reusable", slow)
+    results, barrier = [], threading.Barrier(6)
+
+    def submit():
+        barrier.wait()
+        results.append(new_job("song-1", "sax", {"title": "t"}, {"subdivision": 4}))
+
+    threads = [threading.Thread(target=submit) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+
+    assert len(set(results)) == 1
+    assert len([d for d in tmp_path.iterdir() if d.is_dir()]) == 1
+
+
+# ------------------------------------------------------------- queue position
+
+def test_queued_jobs_report_how_many_are_ahead(monkeypatch):
+    a = new_job("song-1", "sax", {"title": "a"}, {})
+    b = new_job("song-2", "sax", {"title": "b"}, {})
+    c = new_job("song-3", "sax", {"title": "c"}, {})
+
+    assert [pipeline.jobs_ahead(x) for x in (a, b, c)] == [0, 1, 2]
+
+    monkeypatch.setattr(pipeline, "_running", "someone-else")
+    assert [pipeline.jobs_ahead(x) for x in (a, b, c)] == [1, 2, 3]
+
+
+def test_a_job_that_is_not_queued_has_no_position():
+    assert pipeline.jobs_ahead("not-queued") is None
 
 
 # --------------------------------------------------------------------- job dedup
@@ -105,6 +348,13 @@ def test_a_failed_job_is_never_reused(tmp_path, monkeypatch):
     second = new_job("song-1", "sax", {"title": "t"}, {})
 
     assert second != "job-a"
+
+
+def test_a_cancelled_job_is_never_reused(tmp_path):
+    """Resubmitting a cancelled request means "do it after all", not "hand me
+    back the cancelled job"."""
+    _write_status(tmp_path, "job-c", state="cancelled", source_id="song-1", part="sax", options={})
+    assert new_job("song-1", "sax", {"title": "t"}, {}) != "job-c"
 
 
 # ------------------------------------------------------------- melody coverage

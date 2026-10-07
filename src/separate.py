@@ -13,11 +13,11 @@ disk-space win. A four-minute song's six stems ran close to 200MB as WAV.
 """
 
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
-from paths import STEM_NAMES, source_dir
+import procs
+from paths import STEM_NAMES, require_free_space, source_dir
 
 MODEL = "htdemucs_6s"
 
@@ -52,17 +52,21 @@ def separate(source_id: str, audio: Path, force: bool = False) -> dict[str, Path
     if is_separated(source_id) and not force:
         return targets
 
+    require_free_space()
     directory = source_dir(source_id)
     work = directory / "_demucs"
-    work.mkdir(parents=True, exist_ok=True)
+    # A killed earlier run leaves its half-written output here; starting clean
+    # keeps a new run from mixing with it.
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
 
     try:
-        proc = subprocess.run(
+        proc = procs.run(
             [sys.executable, "-m", "demucs", "-n", MODEL, "-d", _device(), "--flac",
              "--out", str(work), str(audio)],
-            capture_output=True, text=True, timeout=3600,
+            timeout=3600,
         )
-    except subprocess.TimeoutExpired:
+    except procs.TimedOut:
         raise SeparationError("Separating the stems timed out after an hour.") from None
 
     produced = work / MODEL / audio.stem

@@ -32,13 +32,16 @@ log = logging.getLogger("uvicorn.error")
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # The job queue is in-memory and dies with the process. Anything left
-    # "queued" or "running" from before this startup is a job a prior crash
-    # or restart orphaned -- mark it interrupted before the (now-empty) queue
-    # can be asked to work on anything new.
-    if recovered := pipeline.recover_interrupted_jobs():
-        log.warning("Marked %d interrupted job(s) from a previous run as failed.", recovered)
+    # The job queue is in-memory and dies with the process, so a restart (or crash)
+    # leaves jobs "queued" or "running" on disk. Put them back on the queue; the
+    # stages are idempotent, so they pick up where they stopped.
+    if resumed := pipeline.startup():
+        log.warning("Resuming %d job(s) interrupted by the last shutdown.", resumed)
     yield
+    # Kill the running job's subprocess and wait for the worker, so stopping the
+    # server never leaves an orphaned demucs/yt-dlp behind. The job stays
+    # "running" on disk and resumes next start.
+    pipeline.shutdown()
 
 
 app = FastAPI(title="clefline", lifespan=lifespan)
@@ -184,7 +187,20 @@ def job_status(job_id: str):
     status = pipeline.get_status(job_id)
     if status.get("state") == "unknown":
         raise HTTPException(status_code=404, detail="No such job")
-    return _public(status)
+    shown = _public(status)
+    if status.get("state") == "queued" and (ahead := pipeline.jobs_ahead(job_id)) is not None:
+        shown["ahead"] = ahead
+    return shown
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str):
+    state = pipeline.cancel(job_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="No such job")
+    if state not in ("cancelled", "running"):
+        raise HTTPException(status_code=409, detail="That job has already finished.")
+    return _public(pipeline.get_status(job_id))
 
 
 @app.get("/api/jobs/{job_id}/page/{number}")

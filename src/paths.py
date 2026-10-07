@@ -16,7 +16,10 @@ anything that resolves outside its root (a symlink, say). Only `source_dir` and
 
 import json
 import re
+import shutil
 from pathlib import Path
+
+import config
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
@@ -31,6 +34,10 @@ SAFE_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 class InvalidId(ValueError):
     """An id that is not safe to use as a directory name."""
+
+
+class LowDisk(RuntimeError):
+    """Not enough free space to start work that writes gigabytes."""
 
 
 def _checked(root: Path, ident: str) -> Path:
@@ -57,6 +64,19 @@ def job_dir(job_id: str) -> Path:
 def job_path(job_id: str) -> Path:
     """Where a job's directory is (or would be). Never creates it."""
     return _checked(JOBS, job_id)
+
+
+def require_free_space() -> None:
+    """Raise LowDisk unless the data disk has config.MIN_FREE_GB free."""
+    probe = DATA
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    free_gb = shutil.disk_usage(probe).free / 1e9
+    if free_gb < config.MIN_FREE_GB:
+        raise LowDisk(
+            f"Only {free_gb:.1f} GB free on the data disk; at least {config.MIN_FREE_GB} GB "
+            "is needed to transcribe a song. Free some space (scripts/cleanup.py) and try again."
+        )
 
 
 def scrub(text: str) -> str:

@@ -26,6 +26,11 @@ def _list(name: str) -> list[str]:
 # otherwise download, then run demucs until its own timeout.
 MAX_DURATION_SECONDS = _int("CLEFLINE_MAX_DURATION_SECONDS", 15 * 60)
 
+# Refuse to start a download or separation with less than this much free disk:
+# a run fills the disk with FLAC stems, and a full disk corrupts everything
+# else the machine is doing. Whole gigabytes.
+MIN_FREE_GB = _int("CLEFLINE_MIN_FREE_GB", 3)
+
 # Host headers the API answers to. The server binds 127.0.0.1, but a hostile web
 # page can still point its own DNS name at 127.0.0.1 and drive the API from the
 # user's browser (DNS rebinding); refusing foreign Host headers closes that.

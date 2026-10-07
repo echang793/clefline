@@ -6,6 +6,10 @@ so they get a short grace period. Sources hold the expensive part (download +
 demucs separation, minutes), so they get a much longer one -- purging a source
 you'll want again next week is a worse mistake than a slightly bigger disk.
 
+Never touches a job that is queued or running, nor a song such a job is working
+on. Also clears two kinds of litter: `_demucs` scratch directories left by a
+separation that was killed, and empty job directories.
+
 Defaults to a dry run: prints what it would delete and touches nothing. Pass
 --yes to actually delete.
 
@@ -26,6 +30,11 @@ from paths import JOBS, SOURCES, read_json  # noqa: E402
 
 DEFAULT_JOB_DAYS = 14.0
 DEFAULT_SOURCE_DAYS = 60.0
+
+ACTIVE_STATES = ("queued", "running")
+# A job directory exists for a moment before its status.json does; don't call
+# one empty (and delete it) until it has clearly been abandoned.
+EMPTY_GRACE_HOURS = 1.0
 
 
 def age_days(path: Path, now: float | None = None) -> float:
@@ -48,6 +57,40 @@ def find_stale(root: Path, max_age_days: float, now: float | None = None) -> lis
         return []
     return sorted(
         d for d in root.iterdir() if d.is_dir() and age_days(d, now) > max_age_days
+    )
+
+
+def active_work() -> tuple[set[str], set[str]]:
+    """(job ids, source ids) of everything currently queued or running."""
+    jobs, sources = set(), set()
+    if JOBS.is_dir():
+        for directory in JOBS.iterdir():
+            status = read_json(directory / "status.json") if directory.is_dir() else None
+            if status and status.get("state") in ACTIVE_STATES:
+                jobs.add(directory.name)
+                if status.get("source_id"):
+                    sources.add(status["source_id"])
+    return jobs, sources
+
+
+def find_empty_jobs(now: float | None = None) -> list[Path]:
+    now = time.time() if now is None else now
+    if not JOBS.is_dir():
+        return []
+    return sorted(
+        d for d in JOBS.iterdir()
+        if d.is_dir() and not any(f.is_file() for f in d.rglob("*"))
+        and (now - d.stat().st_mtime) / 3600 > EMPTY_GRACE_HOURS
+    )
+
+
+def find_scratch(active_sources: set[str]) -> list[Path]:
+    """Leftover `_demucs` work directories of separations that are not running."""
+    if not SOURCES.is_dir():
+        return []
+    return sorted(
+        d / "_demucs" for d in SOURCES.iterdir()
+        if d.is_dir() and (d / "_demucs").is_dir() and d.name not in active_sources
     )
 
 
@@ -76,10 +119,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--yes", action="store_true", help="actually delete (default: dry run)")
     args = parser.parse_args(argv)
 
-    stale_jobs = find_stale(JOBS, args.job_days)
-    stale_sources = find_stale(SOURCES, args.source_days)
+    active_jobs, active_sources = active_work()
+    stale_jobs = [d for d in find_stale(JOBS, args.job_days) if d.name not in active_jobs]
+    stale_sources = [
+        d for d in find_stale(SOURCES, args.source_days) if d.name not in active_sources
+    ]
+    empty_jobs = [d for d in find_empty_jobs() if d.name not in active_jobs]
+    scratch = find_scratch(active_sources)
 
-    if not stale_jobs and not stale_sources:
+    if not (stale_jobs or stale_sources or empty_jobs or scratch):
         print("Nothing to clean up.")
         return 0
 
@@ -88,13 +136,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{verb}  {_describe(path, is_job=True)}")
     for path in stale_sources:
         print(f"{verb}  {_describe(path, is_job=False)}")
+    for path in empty_jobs:
+        print(f"{verb}  empty job directory {path.name}")
+    for path in scratch:
+        print(f"{verb}  leftover separation scratch {path.parent.name}/_demucs")
 
+    everything = (*stale_jobs, *stale_sources, *empty_jobs, *scratch)
     if args.yes:
-        for path in (*stale_jobs, *stale_sources):
-            shutil.rmtree(path)
-        print(f"\nDeleted {len(stale_jobs) + len(stale_sources)} item(s).")
+        for path in everything:
+            shutil.rmtree(path, ignore_errors=True)
+        print(f"\nDeleted {len(everything)} item(s).")
     else:
-        print(f"\n{len(stale_jobs) + len(stale_sources)} item(s) would be deleted. "
+        print(f"\n{len(everything)} item(s) would be deleted. "
               "Re-run with --yes to actually delete.")
     return 0
 
