@@ -7,9 +7,15 @@ Two roots, mirroring the two-phase pipeline:
 
 Every stage writes exactly one artifact and checks for it before running, so
 deleting an artifact re-runs only that stage.
+
+Ids arrive from the network, so they are validated before they become a path:
+`source_dir`/`job_dir`/`job_path` accept only `[A-Za-z0-9_-]{1,64}` and refuse
+anything that resolves outside its root (a symlink, say). Only `source_dir` and
+`job_dir` create directories; `job_path` is for reads, which must never do so.
 """
 
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,17 +26,42 @@ JOBS = DATA / "jobs"
 STEM_NAMES = ("vocals", "drums", "bass", "guitar", "piano", "other")
 PARTS = ("sax", "keys", "drums")
 
+SAFE_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+class InvalidId(ValueError):
+    """An id that is not safe to use as a directory name."""
+
+
+def _checked(root: Path, ident: str) -> Path:
+    if not isinstance(ident, str) or not SAFE_ID.fullmatch(ident):
+        raise InvalidId("That id is not valid.")
+    path = root / ident
+    if path.resolve().parent != root.resolve():
+        raise InvalidId("That id is not valid.")
+    return path
+
 
 def source_dir(source_id: str) -> Path:
-    d = SOURCES / source_id
+    d = _checked(SOURCES, source_id)
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def job_dir(job_id: str) -> Path:
-    d = JOBS / job_id
+    d = _checked(JOBS, job_id)
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def job_path(job_id: str) -> Path:
+    """Where a job's directory is (or would be). Never creates it."""
+    return _checked(JOBS, job_id)
+
+
+def scrub(text: str) -> str:
+    """Hide this machine's filesystem layout in text bound for the browser."""
+    return text.replace(str(ROOT), "<clefline>").replace(str(Path.home()), "~")
 
 
 def read_json(path: Path) -> dict | None:

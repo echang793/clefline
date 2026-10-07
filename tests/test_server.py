@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from server import app
 
-client = TestClient(app)
+client = TestClient(app, base_url="http://127.0.0.1:8104")
 
 
 def test_manifest_names_the_app_and_points_at_the_icon():

@@ -56,11 +56,14 @@ def separate(source_id: str, audio: Path, force: bool = False) -> dict[str, Path
     work = directory / "_demucs"
     work.mkdir(parents=True, exist_ok=True)
 
-    proc = subprocess.run(
-        [sys.executable, "-m", "demucs", "-n", MODEL, "-d", _device(), "--flac",
-         "--out", str(work), str(audio)],
-        capture_output=True, text=True, timeout=3600,
-    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "demucs", "-n", MODEL, "-d", _device(), "--flac",
+             "--out", str(work), str(audio)],
+            capture_output=True, text=True, timeout=3600,
+        )
+    except subprocess.TimeoutExpired:
+        raise SeparationError("Separating the stems timed out after an hour.") from None
 
     produced = work / MODEL / audio.stem
     if not produced.is_dir():

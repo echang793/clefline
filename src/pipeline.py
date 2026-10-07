@@ -30,7 +30,7 @@ import quantize as quantize_module
 import render as render_module
 import score as score_module
 import separate as separate_module
-from paths import job_dir, read_json, source_dir, write_json
+from paths import InvalidId, job_dir, job_path, read_json, scrub, source_dir, write_json
 
 # Rough share of total runtime, so the progress bar moves at a believable pace.
 STAGES = [
@@ -50,11 +50,17 @@ _lock = threading.Lock()
 # --------------------------------------------------------------------------- status
 
 def status_path(job_id: str) -> Path:
-    return job_dir(job_id) / "status.json"
+    # job_path, not job_dir: asking about a job must never create its directory
+    # (write_json makes the parent when a status is actually written).
+    return job_path(job_id) / "status.json"
 
 
 def get_status(job_id: str) -> dict:
-    return read_json(status_path(job_id)) or {"state": "unknown", "job_id": job_id}
+    try:
+        found = read_json(status_path(job_id))
+    except InvalidId:
+        found = None
+    return found or {"state": "unknown", "job_id": job_id}
 
 
 def _set_status(job_id: str, **fields) -> None:
@@ -304,7 +310,8 @@ def _run(job_id: str) -> None:
         # These already read as a clear "what and why" -- fetch/separation
         # failures and the page-size/verovio-parse checks are all raised with
         # a human-facing message on purpose. Shown as-is.
-        _set_status(job_id, state="error", message=str(error) or type(error).__name__,
+        _set_status(job_id, state="error",
+                    message=scrub(str(error)) or type(error).__name__,
                     traceback=traceback.format_exc()[-2000:])
     except Exception as error:
         # Anything else is a genuine surprise -- something inside torch,
@@ -313,7 +320,8 @@ def _run(job_id: str) -> None:
         # doesn't read as if the app understood exactly what went wrong.
         _set_status(
             job_id, state="error",
-            message=f"Unexpected error during transcription: {error or type(error).__name__}",
+            message="Unexpected error during transcription: "
+                    + (scrub(str(error)) or type(error).__name__),
             traceback=traceback.format_exc()[-2000:],
         )
 

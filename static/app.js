@@ -26,23 +26,32 @@ function seconds(value) {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
-function candidateMarkup(candidate) {
-  const thumb = candidate.thumbnail
-    ? `<img src="${candidate.thumbnail}" alt="">`
-    : `<img alt="">`;
-  return `${thumb}
-    <div>
-      <div class="meta-title">${escapeHtml(candidate.title)}</div>
-      <div class="meta-sub">${escapeHtml(candidate.uploader || "")}${
-        candidate.duration ? " · " + seconds(candidate.duration) : ""
-      }${candidate.note ? " · " + escapeHtml(candidate.note) : ""}</div>
-    </div>`;
+// Built from DOM nodes, never innerHTML: titles, uploaders and thumbnail URLs all
+// come from yt-dlp / Spotify metadata, which is untrusted text.
+function rowNode(thumbnail, title, sub) {
+  const fragment = document.createDocumentFragment();
+  const img = document.createElement("img");
+  img.alt = "";
+  if (typeof thumbnail === "string" && thumbnail.startsWith("https://")) img.src = thumbnail;
+  const text = document.createElement("div");
+  const titleNode = document.createElement("div");
+  titleNode.className = "meta-title";
+  titleNode.textContent = title || "";
+  const subNode = document.createElement("div");
+  subNode.className = "meta-sub";
+  subNode.textContent = sub;
+  text.append(titleNode, subNode);
+  fragment.append(img, text);
+  return fragment;
 }
 
-function escapeHtml(text) {
-  const div = document.createElement("div");
-  div.textContent = text ?? "";
-  return div.innerHTML;
+function candidateNode(candidate) {
+  const sub = [
+    candidate.uploader || "",
+    candidate.duration ? seconds(candidate.duration) : "",
+    candidate.note || "",
+  ].filter(Boolean).join(" · ");
+  return rowNode(candidate.thumbnail, candidate.title, sub);
 }
 
 // ---------------------------------------------------------------- resolve
@@ -72,17 +81,13 @@ async function find() {
 
 function renderResolved(data) {
   chosen = data.chosen;
-  $("match").innerHTML = candidateMarkup(data.chosen);
+  $("match").replaceChildren(candidateNode(data.chosen));
 
   if (data.requested) {
-    $("requested").innerHTML = `
-      <img src="${data.requested.thumbnail || ""}" alt="">
-      <div>
-        <div class="meta-title">${escapeHtml(data.requested.title)}</div>
-        <div class="meta-sub">From Spotify · ${escapeHtml(data.requested.artist)} · ${seconds(
-      data.requested.duration
-    )}</div>
-      </div>`;
+    const { thumbnail, title, artist, duration } = data.requested;
+    $("requested").replaceChildren(
+      rowNode(thumbnail, title, `From Spotify · ${artist || ""} · ${seconds(duration)}`)
+    );
     show("requested", true);
   } else {
     show("requested", false);
@@ -93,10 +98,10 @@ function renderResolved(data) {
   alternatives.forEach((candidate) => {
     const button = document.createElement("button");
     button.className = "alt";
-    button.innerHTML = candidateMarkup(candidate);
+    button.replaceChildren(candidateNode(candidate));
     button.onclick = () => {
       chosen = candidate;
-      $("match").innerHTML = candidateMarkup(candidate);
+      $("match").replaceChildren(candidateNode(candidate));
       $("alternatives-wrap").open = false;
     };
     $("alternatives").appendChild(button);

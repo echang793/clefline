@@ -16,7 +16,9 @@ from dataclasses import asdict, dataclass
 from difflib import SequenceMatcher
 
 import httpx
+import soundfile as sf
 
+import config
 from paths import source_dir
 
 YT_ID = re.compile(
@@ -24,6 +26,9 @@ YT_ID = re.compile(
 )
 SPOTIFY_TRACK = re.compile(r"open\.spotify\.com/(?:intl-[a-z]+/)?track/([A-Za-z0-9]{22})")
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+
+# Audio-only streams are a few MB a minute; this is a backstop, not a budget.
+MAX_DOWNLOAD_SIZE = "250M"
 
 # A YouTube upload within this many seconds of the Spotify duration is the same
 # recording; anything further out is a live cut, a remix, or an hour-long loop.
@@ -57,12 +62,27 @@ class Candidate:
 YTDLP = [sys.executable, "-m", "yt_dlp"]
 
 
+def _clock(seconds: float) -> str:
+    total = int(round(seconds))
+    return f"{total // 60}:{total % 60:02d}"
+
+
+def _too_long(seconds: float | None = None) -> FetchError:
+    limit = _clock(config.MAX_DURATION_SECONDS)
+    how_long = f"is {_clock(seconds)} long -- " if seconds else "is too long -- "
+    return FetchError(f"That recording {how_long}the limit is {limit}.")
+
+
 def _run_ytdlp(args: list[str]) -> dict:
-    proc = subprocess.run(
-        [*YTDLP, *args], capture_output=True, text=True, timeout=180
-    )
+    try:
+        proc = subprocess.run(
+            [*YTDLP, *args], capture_output=True, text=True, timeout=180
+        )
+    except subprocess.TimeoutExpired:
+        raise FetchError("Looking that up timed out -- try again.") from None
     if proc.returncode != 0:
-        raise FetchError(f"yt-dlp failed: {proc.stderr.strip().splitlines()[-1:] or proc.stderr}")
+        lines = proc.stderr.strip().splitlines()
+        raise FetchError(f"yt-dlp failed: {lines[-1] if lines else 'no details'}")
     return json.loads(proc.stdout)
 
 
@@ -228,6 +248,8 @@ def resolve(url: str) -> dict:
     url = url.strip()
     if match := YT_ID.search(url):
         chosen = youtube_metadata(match.group(1))
+        if chosen.duration > config.MAX_DURATION_SECONDS:
+            raise _too_long(chosen.duration)
         return {
             "kind": "youtube", "chosen": chosen.as_dict(),
             "alternatives": [], "requested": None,
@@ -238,6 +260,10 @@ def resolve(url: str) -> dict:
         candidates = search_youtube(requested["title"], requested["artist"], requested["duration"])
         if not candidates:
             raise FetchError("No YouTube upload found for that Spotify track.")
+        within_cap = [c for c in candidates if c.duration <= config.MAX_DURATION_SECONDS]
+        if not within_cap:
+            raise _too_long(candidates[0].duration)
+        candidates = within_cap
         return {
             "kind": "spotify",
             "requested": requested,
@@ -253,22 +279,41 @@ def download(source_id: str, force: bool = False):
 
     FLAC over WAV is a pure disk-space win (lossless, ~40-50% smaller) that
     every downstream reader (librosa, soundfile, demucs) handles transparently.
+
+    The length cap is enforced here, not only in resolve(): POST /api/jobs can
+    skip the resolve step, so this is the gate that actually protects the disk
+    and the (hour-long) separation stage.
     """
     directory = source_dir(source_id)
     audio_path = directory / "audio.flac"
     if audio_path.exists() and not force:
         return audio_path
 
-    proc = subprocess.run(
-        [
-            *YTDLP, "-f", "bestaudio/best", "--no-warnings", "--no-playlist",
-            "-x", "--audio-format", "flac",
-            "--postprocessor-args", "ExtractAudio:-ac 1 -ar 44100",
-            "-o", str(directory / "audio.%(ext)s"),
-            f"https://www.youtube.com/watch?v={source_id}",
-        ],
-        capture_output=True, text=True, timeout=900,
-    )
+    try:
+        proc = subprocess.run(
+            [
+                *YTDLP, "-f", "bestaudio/best", "--no-warnings", "--no-playlist",
+                "--match-filter", f"duration<={config.MAX_DURATION_SECONDS}",
+                "--max-filesize", MAX_DOWNLOAD_SIZE,
+                "-x", "--audio-format", "flac",
+                "--postprocessor-args", "ExtractAudio:-ac 1 -ar 44100",
+                "-o", str(directory / "audio.%(ext)s"),
+                f"https://www.youtube.com/watch?v={source_id}",
+            ],
+            capture_output=True, text=True, timeout=900,
+        )
+    except subprocess.TimeoutExpired:
+        raise FetchError("The download timed out after 15 minutes -- try again.") from None
+
     if not audio_path.exists():
+        # yt-dlp exits 0 and prints this when --match-filter skips the video.
+        if "does not pass filter" in proc.stdout + proc.stderr:
+            raise _too_long()
         raise FetchError(f"Download produced no audio: {proc.stderr.strip()[-400:]}")
+
+    # Belt and braces: a filter on metadata can be wrong about the real stream.
+    duration = sf.info(str(audio_path)).duration
+    if duration > config.MAX_DURATION_SECONDS:
+        audio_path.unlink()
+        raise _too_long(duration)
     return audio_path
