@@ -244,3 +244,60 @@ def test_a_queued_status_says_how_many_jobs_are_ahead():
     second = _post(source_id="BBBBBBBBBBB").json()["job_id"]
     assert client.get(f"/api/jobs/{first}").json()["ahead"] == 0
     assert client.get(f"/api/jobs/{second}").json()["ahead"] == 1
+
+
+# --------------------------------------------------------------------- healthz
+
+def test_healthz_reports_each_check_and_the_queue():
+    response = client.get("/healthz")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    for name in ("ffmpeg", "data directory", "disk space", "worker"):
+        assert body["checks"][name]["ok"] is True, body["checks"][name]
+    assert body["queued"] == 0 and body["running"] is False
+
+
+def test_healthz_counts_waiting_jobs():
+    _post(source_id="AAAAAAAAAAA")
+    _post(source_id="BBBBBBBBBBB")
+    assert client.get("/healthz").json()["queued"] == 2
+
+
+def test_healthz_is_503_when_ffmpeg_is_missing(monkeypatch):
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    response = client.get("/healthz")
+    assert response.status_code == 503
+    assert response.json()["ok"] is False
+    assert response.json()["checks"]["ffmpeg"]["ok"] is False
+
+
+def test_healthz_is_503_when_the_disk_is_full(monkeypatch):
+    import config
+
+    monkeypatch.setattr(config, "MIN_FREE_GB", 10**6)
+    response = client.get("/healthz")
+    assert response.status_code == 503
+    assert response.json()["checks"]["disk space"]["ok"] is False
+
+
+def test_healthz_is_503_when_the_worker_died_with_jobs_waiting(monkeypatch):
+    class Dead:
+        def is_alive(self):
+            return False
+
+    monkeypatch.setattr(pipeline, "_worker", Dead())
+    _post()
+    response = client.get("/healthz")
+    assert response.status_code == 503
+    assert response.json()["checks"]["worker"]["ok"] is False
+
+
+def test_healthz_is_fine_when_the_worker_has_not_started_and_nothing_waits():
+    assert client.get("/healthz").json()["checks"]["worker"]["ok"] is True
+
+
+def test_healthz_exposes_no_paths():
+    assert "/Users/" not in client.get("/healthz").text

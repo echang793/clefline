@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template: see com.clefline.server.plist. Runs scripts/cleanup.py weekly: old jobs
+     (14 days) and old songs (60 days) go; queued/running work is never touched. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.clefline.cleanup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO__/.venv/bin/python</string>
+        <string>__REPO__/scripts/cleanup.py</string>
+        <string>--yes</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <!-- Sundays at 04:17. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>0</integer>
+        <key>Hour</key>
+        <integer>4</integer>
+        <key>Minute</key>
+        <integer>17</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/clefline/cleanup.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/clefline/cleanup.log</string>
+</dict>
+</plist>

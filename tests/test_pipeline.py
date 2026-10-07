@@ -503,3 +503,92 @@ def test_page_size_option_works_for_every_part(tmp_path, monkeypatch, part):
         f"job-{part}-test", part, _prepared(), meta={"title": "t"}, options={"page_size": "a4"},
     )
     assert _media_box(artifacts["pdf"]) == (595.28, 841.89)
+
+
+# ------------------------------------------------------- logging and timings
+
+def test_a_finished_job_records_how_long_each_stage_took(monkeypatch):
+    def staged(source_id, on_stage):
+        on_stage("fetch")
+        time.sleep(0.02)
+        on_stage("separate")
+        time.sleep(0.02)
+        return _prepared()
+
+    monkeypatch.setattr(pipeline, "prepare", staged)
+    job_id = new_job("song-1", "sax", {"title": "t"}, {})
+    pipeline._run(job_id)
+
+    timings = pipeline.get_status(job_id)["timings"]
+    assert set(timings) >= {"fetch", "separate", "engrave"}
+    assert all(isinstance(v, float) and v >= 0 for v in timings.values())
+    assert timings["fetch"] >= 0.02
+
+
+def test_the_job_lifecycle_is_logged(monkeypatch, caplog):
+    monkeypatch.setattr(pipeline, "prepare", lambda source_id, on_stage: _prepared())
+    job_id = new_job("song-1", "sax", {"title": "t"}, {})
+    with caplog.at_level("INFO", logger="clefline.pipeline"):
+        pipeline._run(job_id)
+    text = caplog.text
+    assert f"job {job_id} started" in text and "attempt 1" in text
+    assert f"job {job_id} done" in text
+
+
+def test_a_failure_is_logged_with_its_full_traceback(monkeypatch, caplog):
+    def explode(source_id, on_stage):
+        raise OSError("disk exploded")
+
+    monkeypatch.setattr(pipeline, "prepare", explode)
+    job_id = new_job("song-1", "sax", {"title": "t"}, {})
+    with caplog.at_level("ERROR", logger="clefline.pipeline"):
+        pipeline._run(job_id)
+
+    record = next(r for r in caplog.records if "failed" in r.getMessage())
+    assert record.exc_info is not None
+    assert "disk exploded" in caplog.text
+
+
+def test_a_cancellation_is_logged(caplog):
+    job_id = new_job("song-1", "sax", {"title": "t"}, {})
+    with caplog.at_level("INFO", logger="clefline.pipeline"):
+        pipeline.cancel(job_id)
+    assert f"job {job_id} cancelled" in caplog.text
+
+
+# ------------------------------------------------------- concurrent status writes
+
+def test_concurrent_status_updates_never_lose_a_field():
+    """_set_status is read-modify-write on status.json, and the request thread
+    (cancel) and the worker both write it. Unlocked, one thread's stale read
+    overwrote the other's newer write -- e.g. a finished job flipped back to
+    "running"."""
+    job_id = new_job("song-1", "sax", {"title": "t"}, {})
+    for round_number in range(300):
+        barrier = threading.Barrier(2)
+
+        def write(field, value=round_number, gate=barrier):
+            gate.wait()
+            pipeline._set_status(job_id, **{field: value})
+
+        threads = [threading.Thread(target=write, args=(f,)) for f in ("left", "right")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        status = pipeline.get_status(job_id)
+        assert (status["left"], status["right"]) == (round_number, round_number), (
+            f"lost an update in round {round_number}: {status}"
+        )
+
+
+def test_the_cancelling_note_never_overwrites_a_job_that_already_finished(tmp_path):
+    _write_status(tmp_path, "j-done", state="cancelled", message="Cancelled",
+                  source_id="s", part="sax")
+    pipeline._note_cancelling("j-done")
+    assert pipeline.get_status("j-done")["message"] == "Cancelled"
+
+    _write_status(tmp_path, "j-run", state="running", message="Separating stems",
+                  source_id="s", part="sax")
+    pipeline._note_cancelling("j-run")
+    assert pipeline.get_status("j-run")["message"].startswith("Cancelling")

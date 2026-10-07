@@ -50,6 +50,7 @@ _work: "queue.Queue[str]" = queue.Queue()
 _worker: threading.Thread | None = None
 _lock = threading.Lock()          # starting the worker thread
 _submit_lock = threading.Lock()   # makes "is there already a job for this?" + "create it" atomic
+_status_lock = threading.RLock()  # makes a status read-modify-write atomic (see _set_status)
 _cancelled: set[str] = set()      # jobs the user cancelled that the worker has not yet wound down
 _stop = threading.Event()         # the server is shutting down
 _running: str | None = None       # the job the worker is on right now
@@ -77,9 +78,21 @@ def get_status(job_id: str) -> dict:
 
 
 def _set_status(job_id: str, **fields) -> None:
-    current = get_status(job_id)
-    current.update(fields, job_id=job_id, updated=time.time())
-    write_json(status_path(job_id), current)
+    # Read-modify-write on status.json, and both the worker and request threads
+    # (cancel) call it. Unlocked, a stale read overwrote a newer write -- a
+    # finished job could flip back to "running".
+    with _status_lock:
+        current = get_status(job_id)
+        current.update(fields, job_id=job_id, updated=time.time())
+        write_json(status_path(job_id), current)
+
+
+def _note_cancelling(job_id: str) -> None:
+    """Show "Cancelling…" on a running job -- but never over a state the worker
+    has already moved on to (it may have finished winding down first)."""
+    with _status_lock:
+        if get_status(job_id).get("state") == "running":
+            _safe_status(job_id, message="Cancelling…")
 
 
 def _safe_status(job_id: str, **fields) -> None:
@@ -304,10 +317,12 @@ def cancel(job_id: str) -> str | None:
     if state == "queued":
         _cancelled.add(job_id)   # first, so a worker about to pick it up still sees it
         _safe_status(job_id, state="cancelled", message="Cancelled")
+        log.info("job %s cancelled while queued", job_id)
         return "cancelled"
     if state == "running":
         _cancelled.add(job_id)
-        _safe_status(job_id, message="Cancelling…")
+        _note_cancelling(job_id)
+        log.info("job %s: cancel requested while running", job_id)
         return "running"
     return state
 
@@ -330,6 +345,8 @@ def resume_interrupted_jobs() -> int:
     for job in orphans:
         job_id = job["job_id"]
         if job.get("attempts", 0) >= MAX_ATTEMPTS:
+            log.error("job %s not resumed: it has already crashed the server %d times",
+                      job_id, job.get("attempts", 0))
             _safe_status(
                 job_id, state="error",
                 message="This job crashed the server twice, so it was not retried -- "
@@ -338,8 +355,20 @@ def resume_interrupted_jobs() -> int:
             continue
         _safe_status(job_id, state="queued", message="Resuming after a restart")
         _work.put(job_id)
+        log.info("job %s resumed after a restart (attempt %d next)", job_id,
+                 job.get("attempts", 0) + 1)
         resumed += 1
     return resumed
+
+
+def worker_status() -> dict:
+    """What /healthz needs to know about the worker, without touching its state."""
+    worker = _worker
+    return {
+        "alive": None if worker is None else worker.is_alive(),   # None: not started yet
+        "queued": _work.qsize(),
+        "running": _running is not None,
+    }
 
 
 def startup() -> int:
@@ -373,16 +402,29 @@ def _run(job_id: str) -> None:
         return
 
     labels = {name: label for name, label, _ in STAGES}
+    timings: dict[str, float] = {}
+    clock = {"stage": None, "since": 0.0}
+
+    def end_stage() -> None:
+        if clock["stage"] is not None:
+            timings[clock["stage"]] = round(
+                timings.get(clock["stage"], 0.0) + time.monotonic() - clock["since"], 2)
 
     def on_stage(name: str) -> None:
         procs.check_cancelled()
+        end_stage()
+        clock.update(stage=name, since=time.monotonic())
         _set_status(job_id, stage=name, message=labels.get(name, name),
                     progress=_progress_through(name))
 
     _running = job_id
     try:
         with procs.scope(lambda: job_id in _cancelled or _stop.is_set()):
-            _set_status(job_id, state="running", attempts=job.get("attempts", 0) + 1)
+            attempt = job.get("attempts", 0) + 1
+            started = time.monotonic()
+            log.info("job %s started: %s for %s (attempt %d)",
+                     job_id, job.get("part"), job.get("source_id"), attempt)
+            _set_status(job_id, state="running", attempts=attempt)
             prepared = prepare(job["source_id"], on_stage)
             on_stage("engrave")
             artifacts = engrave(job_id, job["part"], prepared, job.get("meta", {}),
@@ -402,10 +444,15 @@ def _run(job_id: str) -> None:
             if job["part"] in ("sax", "keys") and coverage < SPARSE_MELODY_THRESHOLD:
                 detected["sparse_melody"] = True
 
+            end_stage()
             _set_status(job_id, state="done", stage="done", progress=1.0,
-                        message="Ready", artifacts=artifacts, detected=detected)
+                        message="Ready", artifacts=artifacts, detected=detected,
+                        timings=timings)
+            log.info("job %s done in %.1fs (%s)", job_id, time.monotonic() - started,
+                     ", ".join(f"{k} {v}s" for k, v in timings.items()))
     except procs.Cancelled:
         if job_id in _cancelled:
+            log.info("job %s cancelled", job_id)
             _safe_status(job_id, state="cancelled", message="Cancelled")
         else:
             # Server shutdown, not the user giving up: leave the job "running" so
@@ -416,6 +463,7 @@ def _run(job_id: str) -> None:
         # These already read as a clear "what and why" -- fetch/separation
         # failures and the page-size/verovio-parse checks are all raised with
         # a human-facing message on purpose. Shown as-is.
+        log.warning("job %s failed: %s", job_id, error)
         _safe_status(job_id, state="error",
                      message=scrub(str(error)) or type(error).__name__,
                      traceback=traceback.format_exc()[-2000:])
@@ -424,6 +472,7 @@ def _run(job_id: str) -> None:
         # librosa or music21 that this pipeline doesn't have a specific
         # message for. Framed as unexpected rather than shown bare, so it
         # doesn't read as if the app understood exactly what went wrong.
+        log.error("job %s failed unexpectedly: %s", job_id, error, exc_info=True)
         _safe_status(
             job_id, state="error",
             message="Unexpected error during transcription: "

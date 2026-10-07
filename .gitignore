@@ -14,3 +14,7 @@ data/
 *.m4a
 credentials*
 *.pem
+.claude/settings.local.json
+.mypy_cache/
+.coverage
+htmlcov/

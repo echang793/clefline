@@ -1,4 +1,9 @@
 # Python 3.11 ONLY. basic-pitch's CoreML/ONNX backends have no cp313/cp314 wheels.
+# Install with:  uv pip install -r requirements.txt --override overrides.txt
+# For exactly the versions this was tested with:
+#   uv pip install --no-deps -r requirements.lock
+# yt-dlp is deliberately NOT pinned: YouTube breaks old builds, so it must be
+# upgradeable on its own (uv pip install -U yt-dlp).
 demucs==4.1.0
 basic-pitch==0.4.0
 librosa==0.11.0
@@ -18,5 +23,3 @@ yt-dlp
 fastapi
 uvicorn
 httpx
-pytest
-ruff

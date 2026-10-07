@@ -22,7 +22,7 @@ from pathlib import Path
 import config
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA = ROOT / "data"
+DATA = Path(config.DATA_DIR).expanduser().resolve() if config.DATA_DIR else ROOT / "data"
 SOURCES = DATA / "sources"
 JOBS = DATA / "jobs"
 

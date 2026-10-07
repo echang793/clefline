@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template: scripts/install-service.sh replaces __REPO__ and __HOME__ and installs
+     the result into ~/Library/LaunchAgents. Do not load this file directly. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.clefline.server</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO__/.venv/bin/python</string>
+        <string>__REPO__/src/server.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart after a crash or an out-of-memory kill, but not after a clean exit.
+         A failed startup check exits 1, so ThrottleInterval keeps that from spinning. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <!-- A transcription is heavy sustained work; don't let macOS treat it as a
+         background daemon to be throttled. -->
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- launchd's default PATH has no /opt/homebrew/bin, so ffmpeg would not be found. -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/clefline/server.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/clefline/server.log</string>
+</dict>
+</plist>

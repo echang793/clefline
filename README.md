@@ -45,17 +45,24 @@ the quantize/score/engrave stage.
 ## Setup
 
 **Requires Python 3.11** — not 3.13, not 3.14. `basic-pitch`'s CoreML/TF
-backends have no wheels for newer Pythons.
+backends have no wheels for newer Pythons. Keep the project somewhere that is
+**not iCloud-synced** (e.g. `~/Projects/clefline`, not Desktop or Documents):
+cold reads of evicted files stall imports for minutes.
 
 ```bash
 uv venv --python 3.11 .venv
+uv pip install --python .venv/bin/python --no-deps -r requirements.lock   # exact tested versions
+```
+
+or, to resolve fresh from `requirements.txt` (dev tools: `requirements-dev.txt`):
+
+```bash
 uv pip install --python .venv/bin/python -r requirements.txt --override overrides.txt
 ```
 
-`--override overrides.txt` is required: basic-pitch pins an old `resampy` that breaks on
-current setuptools (see the file for why).
-
-Also needs `ffmpeg` on PATH (`brew install ffmpeg`).
+`--override overrides.txt` is required when resolving: basic-pitch pins an old
+`resampy` that breaks on current setuptools (see the file for why). Also needs
+`ffmpeg` on PATH (`brew install ffmpeg`).
 
 ## Run
 
@@ -63,9 +70,13 @@ Also needs `ffmpeg` on PATH (`brew install ffmpeg`).
 .venv/bin/python src/server.py            # http://127.0.0.1:8104
 ```
 
+Startup checks run first and stop with the reason if something essential is
+missing (wrong Python, no ffmpeg, unwritable data directory).
+
 Installable as a PWA (an icon on your home screen / dock, not offline audio
 processing — the transcription itself always needs the network). The **Recent**
-panel on the main page lists past jobs and links back to their charts.
+panel on the main page lists past jobs and links back to their charts. A job
+can be stopped with `curl -X POST http://127.0.0.1:8104/api/jobs/<job id>/cancel`.
 
 Or transcribe from the terminal:
 
@@ -73,30 +84,80 @@ Or transcribe from the terminal:
 .venv/bin/python src/cli.py <youtube-or-spotify-url> --part sax
 ```
 
-`data/` has no automatic expiry, so it grows with every song and job. Clean it
-up periodically (dry run by default, `--yes` to actually delete):
+### Always on (launchd)
+
+```bash
+scripts/install-service.sh              # install + start the server and a weekly cleanup
+scripts/install-service.sh --uninstall  # stop and remove both
+```
+
+The server restarts itself after a crash or out-of-memory kill; a job that was
+running is **resumed**, not lost (a job that has already crashed the server twice is
+failed instead, so it can't loop). Stopping the server cleanly leaves the job
+resumable too. The installer refuses an iCloud-synced checkout.
+
+| What | Where |
+| --- | --- |
+| Health | `curl http://127.0.0.1:8104/healthz` — 200, or 503 naming the failing check |
+| Server output (launchd) | `~/Library/Logs/clefline/server.log` |
+| App log (rotating, 5 MB × 3) | `data/logs/clefline.log` — job lifecycle, per-stage timings, full tracebacks |
+| Restart | `launchctl kickstart -k gui/$(id -u)/com.clefline.server` |
+
+### Settings
+
+All optional, all environment variables (see `.env.example`):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `CLEFLINE_HOST` / `CLEFLINE_PORT` | `127.0.0.1` / `8104` | Where it listens. There is **no authentication** — keep it on loopback. |
+| `CLEFLINE_DATA_DIR` | `data/` in the repo | Audio, stems, jobs, logs |
+| `CLEFLINE_MAX_DURATION_SECONDS` | `900` | Longest recording to transcribe |
+| `CLEFLINE_MIN_FREE_GB` | `3` | Refuse to start a download/separation below this much free disk |
+| `CLEFLINE_ALLOWED_HOSTS` | *(none)* | Extra Host headers to accept (`127.0.0.1` and `localhost` always are) |
+| `CLEFLINE_LOG_LEVEL` | `INFO` | `DEBUG`…`CRITICAL` |
+
+To set them for the service, add them to `EnvironmentVariables` in
+`~/Library/LaunchAgents/com.clefline.server.plist` (or edit
+`deploy/com.clefline.server.plist` and re-run the installer).
+
+### Keeping it working
+
+- **yt-dlp** is deliberately unpinned: YouTube breaks old builds. If downloads start
+  failing, `uv pip install --python .venv/bin/python -U yt-dlp` and restart. Its version
+  is logged at startup.
+- **Disk:** `data/` has no expiry of its own; the weekly cleanup agent removes jobs older
+  than 14 days and songs older than 60 days (never anything queued or running). By hand
+  (dry run by default):
 
 ```bash
 .venv/bin/python scripts/cleanup.py                 # preview
-.venv/bin/python scripts/cleanup.py --yes            # delete jobs >14d, songs >60d old
+.venv/bin/python scripts/cleanup.py --yes            # delete
 ```
+
+- **First run** of a model downloads its weights (demucs, beat_this); startup says
+  when they aren't cached yet.
 
 ## Test
 
 ```bash
 .venv/bin/python -m pytest tests/ -q      # synthesized audio; network tests need --run-network
-.venv/bin/ruff check src tests
+.venv/bin/ruff check src tests scripts
 ```
+
+CI (GitHub Actions, macOS) runs the same two commands on every push.
 
 ## Notes
 
 - Melody comes only from the vocal stem — notes only, never lyrics.
 - Detection can be wrong. The UI's **Adjust** panel overrides key, tempo,
-  meter, and quantization grid, and re-renders from cached MIDI in under a
-  second.
+  meter, and quantization grid; re-transcribing a song that is already cached
+  takes about 20 seconds (only the notation is rebuilt, not the audio analysis).
 - Drum classification is a hand-built onset classifier, not a trained model:
   kick/snare/hi-hat are reliable, toms are reasonably reliable, and the
   ride/crash split — a heuristic on top of an already-heuristic cymbal
   detection — is the shakiest of the bunch.
-- Binds `127.0.0.1` by default. This downloads audio for personal
-  transcription — the output isn't meant for redistribution.
+- **Personal use only.** This downloads audio from YouTube for personal
+  transcription; the output isn't meant for redistribution. It is built for one
+  person on one machine — requests are validated and Host-checked, but there is no
+  authentication, so don't expose it beyond localhost. Running it as a public service
+  would mean operating a download-and-transcribe service for copyrighted audio.

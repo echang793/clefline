@@ -7,7 +7,6 @@ same browser can reach a localhost server.
 """
 
 import logging
-import os
 import sys
 import threading
 from contextlib import asynccontextmanager
@@ -24,14 +23,24 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 
 import config  # noqa: E402
 import fetch  # noqa: E402
+import logs  # noqa: E402
 import paths  # noqa: E402
 import pipeline  # noqa: E402
+import preflight  # noqa: E402
 
-log = logging.getLogger("uvicorn.error")
+log = logging.getLogger("clefline.server")
+
+
+def ensure_preflight() -> list:
+    """Run preflight unless `python src/server.py` already did, before binding the port."""
+    return preflight.last if preflight.last is not None else preflight.require()
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    logs.configure()
+    log.info("starting clefline (data in %s)", paths.DATA)
+    ensure_preflight()
     # The job queue is in-memory and dies with the process, so a restart (or crash)
     # leaves jobs "queued" or "running" on disk. Put them back on the queue; the
     # stages are idempotent, so they pick up where they stopped.
@@ -230,7 +239,25 @@ def job_file(job_id: str, name: str):
 
 @app.get("/healthz")
 def healthz():
-    return JSONResponse({"ok": True})
+    """Is this server able to do its job? 503 if not, with which check failed.
+
+    Cheap enough for a monitor to poll: it checks ffmpeg, the data directory,
+    free disk and the worker thread, not the heavy model imports.
+    """
+    checks = {c.name: {"ok": c.ok, "detail": c.detail} for c in preflight.live()}
+
+    state = pipeline.worker_status()
+    died = state["alive"] is False and state["queued"] > 0
+    checks["worker"] = {
+        "ok": not died,
+        "detail": f"the worker thread died with {state['queued']} job(s) waiting" if died
+        else "running" if state["alive"] else "idle",
+    }
+    ok = all(c["ok"] for c in checks.values())
+    return JSONResponse(
+        {"ok": ok, "checks": checks, "queued": state["queued"], "running": state["running"]},
+        status_code=200 if ok else 503,
+    )
 
 
 # --------------------------------------------------------------------------- PWA
@@ -273,9 +300,7 @@ app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(
-        app,
-        host=os.environ.get("CLEFLINE_HOST", "127.0.0.1"),
-        port=int(os.environ.get("CLEFLINE_PORT", "8104")),
-        log_level="info",
-    )
+    # Fail with the reason (and a clean message) before binding the port.
+    logs.configure()
+    preflight.require()
+    uvicorn.run(app, host=config.HOST, port=config.PORT, log_level="info")
