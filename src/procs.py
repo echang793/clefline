@@ -149,6 +149,12 @@ def _command_of(pid: int) -> str:
     return result.stdout.strip()
 
 
+def _arguments(command: str) -> list[str]:
+    """The first two arguments after the program (`-m demucs`, `-m yt_dlp`, `-c ...`):
+    what identifies a job, whatever path the interpreter was started through."""
+    return command.split()[1:3]
+
+
 def reap_orphans() -> int:
     """Kill children left running by a server that died; return how many."""
     registry = _registry()
@@ -168,8 +174,12 @@ def reap_orphans() -> int:
         if _pid_alive(child):
             running = _command_of(child)
             # The pid may have been reused by something unrelated: only kill it if
-            # it is still running the program we started (same executable and flag).
-            if running and recorded.split()[:2] == running.split()[:2]:
+            # it is still running what we started. Compare the arguments, never
+            # argv[0]: `ps` shows a framework/Homebrew Python's real binary path,
+            # not the venv's .venv/bin/python that sys.executable (and so the
+            # recorded command) names -- CI caught orphans surviving because of it.
+            wanted = _arguments(recorded)
+            if wanted and wanted == _arguments(running):
                 log.warning("killing orphaned child %s left by a dead server: %s", child, running)
                 with contextlib.suppress(ProcessLookupError, PermissionError):
                     os.killpg(child, signal.SIGKILL)

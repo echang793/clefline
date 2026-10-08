@@ -224,3 +224,30 @@ def test_stale_registry_entries_are_cleaned_up_even_when_nothing_is_running():
 
 def test_reaping_with_no_registry_is_a_no_op():
     assert procs.reap_orphans() == 0
+
+
+def test_a_child_is_recognised_even_if_ps_shows_a_different_interpreter_path():
+    """Found by CI: on a framework/Homebrew Python, `ps` shows the real binary
+    (.../Python.app/Contents/MacOS/Python), not the venv's .venv/bin/python that
+    sys.executable (and so the recorded command) names. Matching on argv[0] left such
+    orphans alive. The arguments (`-m demucs`, `-m yt_dlp`) are what identify the job."""
+    child = _start_sleeper()
+    try:
+        _register(child, parent=_dead_pid(), cmd="/some/other/venv/bin/python -c import time")
+        assert procs.reap_orphans() == 1
+        assert _wait_dead(child.pid)
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait()
+
+
+def test_a_recorded_command_with_no_arguments_is_never_trusted_enough_to_kill():
+    child = _start_sleeper()
+    try:
+        _register(child, parent=_dead_pid(), cmd="/usr/bin/python")
+        assert procs.reap_orphans() == 0
+        assert child.poll() is None
+    finally:
+        child.kill()
+        child.wait()
