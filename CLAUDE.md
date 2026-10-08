@@ -38,6 +38,21 @@ purpose: not iCloud-synced (cold reads there stalled imports and a test run for 
   instead (`MAX_ATTEMPTS`), so one that kills the server cannot loop.
 
 
+## Frontend rules
+
+- **No build step, no npm.** `static/` is served as-is by `RevalidatingStaticFiles`
+  (`Cache-Control: no-cache`, so every load revalidates). The CSP allows nothing off-origin
+  except images, and no inline script/style: never add a CDN link, inline `<script>`, or
+  `style=` attribute (setting `el.style.x` from JS is fine).
+- **Never assign untrusted text to `innerHTML`** (titles/thumbnails come from yt-dlp/Spotify):
+  build DOM nodes. `tests/test_static.py` fails on any non-literal `innerHTML`.
+- **Colour:** neon green is a fill/ring/border, never text. `tests/test_contrast.py` enforces
+  WCAG AA for every token pair in both themes; change tokens in `style.css` and let it check.
+- **Polling lives in `static/poll.js`** (injected fetch/timers, unit-tested in `tests/js`):
+  one request in flight, backoff then give-up, slow when the tab is hidden, stale answers
+  ignored. `app.js` is DOM glue around it. Bump `CACHE` in `sw.js` when the shell changes.
+- Fonts (Space Mono, JetBrains Mono) are self-hosted in `static/fonts` (OFL.txt ships with them).
+
 ## Gotchas that cost real time
 
 These are all load-bearing. Each one failed silently or misleadingly first time.

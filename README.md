@@ -75,8 +75,14 @@ missing (wrong Python, no ffmpeg, unwritable data directory).
 
 Installable as a PWA (an icon on your home screen / dock, not offline audio
 processing — the transcription itself always needs the network). The **Recent**
-panel on the main page lists past jobs and links back to their charts. A job
-can be stopped with `curl -X POST http://127.0.0.1:8104/api/jobs/<job id>/cancel`.
+panel lists past jobs and links back to their charts.
+
+While a job runs you can **Cancel** it (a running demucs is killed immediately), and
+a failed or cancelled job offers **Try again**. Reloading the page — or opening it
+in another tab — picks a running job back up; if the server goes away mid-job the page
+says it is reconnecting and carries on when it returns. The shell is revalidated on
+every load (no stale `app.js` after an edit), fonts are self-hosted, and nothing is
+fetched from another origin except thumbnails.
 
 Or transcribe from the terminal:
 
@@ -144,7 +150,10 @@ To set them for the service, add them to `EnvironmentVariables` in
 .venv/bin/ruff check src tests scripts
 ```
 
-CI (GitHub Actions, macOS) runs the same two commands on every push.
+The suite includes JavaScript unit tests (`tests/js`, Node's built-in runner — no npm
+packages; skipped if `node` is missing). CI (GitHub Actions, macOS) runs the same two
+commands on every push. If you change `static/icon.svg`, update and re-run
+`scripts/make_icons.py` (writes the PNG icons).
 
 ## Notes
 

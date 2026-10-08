@@ -15,13 +15,17 @@
    (cycliq, 2026-08-06). Bump CACHE on any shell change so activate's
    cleanup still runs. */
 
-const CACHE = 'clefline-shell-v1';
+const CACHE = 'clefline-shell-v2';
 const SHELL = [
   '/',
   '/style.css',
+  '/poll.js',
   '/app.js',
   '/icon.svg',
   '/manifest.json',
+  '/fonts/SpaceMono-Regular.woff2',
+  '/fonts/SpaceMono-Bold.woff2',
+  '/fonts/JetBrainsMono-Regular.woff2',
 ];
 
 async function cacheShellFresh() {
@@ -48,7 +52,10 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
-  if (event.request.method !== 'GET' || url.pathname.startsWith('/api/')) return;
+  // Live data is never served from cache: job state, and the health check (a cached
+  // "ok" would be a lie about a server that is down).
+  if (event.request.method !== 'GET' || url.pathname.startsWith('/api/')
+      || url.pathname === '/healthz') return;
 
   event.respondWith(
     fetch(event.request, { cache: 'reload' })
@@ -57,6 +64,12 @@ self.addEventListener('fetch', (event) => {
         caches.open(CACHE).then((c) => c.put(event.request, copy)).catch(() => {});
         return response;
       })
-      .catch(() => caches.match(event.request).then((hit) => hit || caches.match('/'))),
+      .catch(() => caches.match(event.request).then((hit) => {
+        if (hit) return hit;
+        // Only a page navigation may fall back to the app shell; answering a failed
+        // script or image request with HTML would only break it more confusingly.
+        if (event.request.mode === 'navigate') return caches.match('/');
+        return new Response('', { status: 503, statusText: 'Offline' });
+      })),
   );
 });

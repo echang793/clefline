@@ -1,21 +1,41 @@
 /* Design system: "Mono" (typeui.sh) -- monospace-driven, matrix-inspired,
    high-contrast, compact density. Neon green on warm stone rather than
    green-on-black, so the terminal look stays legible and daylight-usable.
-   See .claude/skills/design-system/SKILL.md for the source tokens. */
+   See .claude/skills/design-system/SKILL.md for the source tokens.
+
+   Accessibility rule that overrides the source tokens where they conflict:
+   neon green (#37f712) is a FILL, RING or BORDER colour only -- on a light
+   panel it is ~1.4:1, so it is never text. The source "text" grey (#78716b)
+   is only 3.8:1 on its own surface, so --muted is darker. tests/test_contrast.py
+   enforces WCAG AA for every pair below. */
+
+@font-face {
+  font-family: "Space Mono"; font-style: normal; font-weight: 400; font-display: swap;
+  src: url("/fonts/SpaceMono-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Space Mono"; font-style: normal; font-weight: 700; font-display: swap;
+  src: url("/fonts/SpaceMono-Bold.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono"; font-style: normal; font-weight: 400; font-display: swap;
+  src: url("/fonts/JetBrainsMono-Regular.woff2") format("woff2");
+}
 
 :root {
   --bg: #e7e5e4;
   --panel: #f4f3f1;
   --ink: #1c1917;
-  --muted: #78716b;
+  --muted: #645d57;
   --line: #d6d3d0;
   --primary: #37f712;
   --on-primary: #0a2000;
+  --focus: #1c1917;
   --secondary: #00a6f4;
   --success: #00a63d;
-  --warning: #fe9900;
+  --warning: #855000;
   --warning-bg: #fdecd2;
-  --danger: #ff2157;
+  --danger: #b3002e;
   --danger-bg: #ffe1e8;
 }
 
@@ -33,7 +53,13 @@ h1 {
   margin: 0; font-size: 26px; letter-spacing: -0.01em; font-weight: 700;
   text-transform: lowercase;
 }
-h1::before { content: "> "; color: var(--primary); }
+/* A terminal-cursor block: neon FILL with dark text. The "/ ''" gives the generated
+   content an empty accessible name, so screen readers do not say "greater than". */
+h1::before {
+  content: ">" / "";
+  background: var(--primary); color: var(--on-primary);
+  padding: 0 7px; margin-right: 8px; border-radius: 3px;
+}
 .tagline { margin: 6px 0 0; color: var(--muted); }
 
 main { max-width: 900px; margin: 0 auto; padding: 20px 14px 64px; }
@@ -48,6 +74,7 @@ main { max-width: 900px; margin: 0 auto; padding: 20px 14px 64px; }
 
 h2 { font-size: 15px; margin: 0 0 10px; font-weight: 700; }
 h2.spaced { margin-top: 20px; }
+h2:focus { outline: none; }   /* focused programmatically when a card appears, not by tabbing */
 
 label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
 
@@ -63,10 +90,14 @@ input[type=url], input[type=number], select {
   font-size: 14px;
   font-family: "JetBrains Mono", "Space Mono", ui-monospace, monospace;
 }
-input:focus, select:focus {
-  outline: 2px solid var(--primary); outline-offset: -1px;
-  background: var(--panel);
+/* Focus: a dark (light theme) / neon (dark theme) ring that meets 3:1, with the
+   neon halo as the brand accent. */
+input:focus-visible, select:focus-visible, button:focus-visible,
+.downloads a:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--focus); outline-offset: 0;
+  box-shadow: 0 0 0 4px var(--primary);
 }
+input:focus-visible, select:focus-visible { background: var(--panel); }
 
 button, .downloads a {
   cursor: pointer;
@@ -81,27 +112,29 @@ button, .downloads a {
   text-decoration: none;
   display: inline-block;
 }
-button:hover, .downloads a:hover { border-color: var(--primary); color: var(--primary); }
+button:hover, .downloads a:hover { border-color: var(--ink); box-shadow: inset 0 -3px 0 var(--primary); }
 button.primary, .downloads a.primary {
   background: var(--primary); color: var(--on-primary); border-color: var(--primary);
 }
 button.primary:hover, .downloads a.primary:hover {
-  background: var(--on-primary); color: var(--primary); border-color: var(--primary);
+  border-color: var(--ink); filter: brightness(0.93); box-shadow: none;
 }
-button:disabled { opacity: 0.5; cursor: default; }
-button:focus-visible, .downloads a:focus-visible, .part:focus-visible {
-  outline: 2px solid var(--primary); outline-offset: 1px;
-}
+button:disabled { opacity: 0.5; cursor: default; box-shadow: none; }
+button[aria-busy=true] { cursor: progress; }
 
 .hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
 .error {
   color: var(--danger); background: var(--danger-bg);
-  border-radius: 4px; padding: 8px 10px; font-size: 13px; margin: 8px 0 0;
+  border-radius: 4px; padding: 8px 10px; font-size: 13px; margin: 0;
 }
 .warning {
   color: var(--warning); background: var(--warning-bg);
   border-radius: 4px; padding: 8px 10px; font-size: 13px; margin: 10px 0 0;
 }
+#input-error { margin-top: 8px; }
+.alert-row { display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; }
+.alert-row .error { flex: 1 1 16em; }
+.card-actions { margin-top: 10px; display: flex; gap: 8px; }
 
 .match, .requested { display: flex; gap: 10px; align-items: center; }
 .requested { padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px dashed var(--line); }
@@ -114,13 +147,13 @@ button:focus-visible, .downloads a:focus-visible, .part:focus-visible {
 
 .parts { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
 .part { text-align: left; padding: 11px; }
-.part[aria-pressed=true] { border-color: var(--primary); box-shadow: inset 0 0 0 2px var(--primary); }
+.part[aria-pressed=true] { border-color: var(--ink); box-shadow: inset 0 0 0 2px var(--primary); }
 .part-name { display: block; font-weight: 700; }
 .part-note { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; font-weight: 400; }
 
 .adjust { margin-top: 16px; }
 summary { cursor: pointer; font-size: 13px; color: var(--muted); font-weight: 700; }
-summary:hover { color: var(--primary); }
+summary:hover { color: var(--ink); text-decoration: underline; text-decoration-color: var(--primary); text-decoration-thickness: 2px; }
 .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-top: 10px; }
 .fields label { color: var(--muted); }
 .fields select, .fields input { width: 100%; margin-top: 4px; }
@@ -156,7 +189,10 @@ summary:hover { color: var(--primary); }
 .history-row:first-child { border-top: none; }
 .history-main { flex: 1; min-width: 0; text-align: left; background: none; border: none;
   padding: 0; cursor: pointer; font: inherit; font-weight: 400; color: inherit; }
-.history-main:hover .history-title { color: var(--primary); }
+.history-main:hover { box-shadow: none; }
+.history-main:hover .history-title {
+  text-decoration: underline; text-decoration-color: var(--primary); text-decoration-thickness: 2px;
+}
 .history-title { display: block; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .history-meta {
   display: block; color: var(--muted); font-size: 12px; margin-top: 2px;
@@ -167,14 +203,21 @@ summary:hover { color: var(--primary); }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0b0c0a; --panel: #131511; --ink: #ece9e4; --muted: #9a958c;
-    --line: #2a2c26; --primary: #37f712; --on-primary: #05140a;
+    --line: #2a2c26; --primary: #37f712; --on-primary: #05140a; --focus: #37f712;
     --secondary: #00a6f4; --success: #00a63d; --warning: #fe9900;
     --warning-bg: #3a2a0a; --danger: #ff4d74; --danger-bg: #3a0f1a;
   }
   input[type=url], input[type=number], select, button, .downloads a { background: #16180f; }
-  input[type=url]:focus, input[type=number]:focus, select:focus { background: #131511; }
+  input[type=url]:focus-visible, input[type=number]:focus-visible, select:focus-visible {
+    background: #131511;
+  }
+  .history-main { background: none; }
   /* Engravings are black ink on white paper; keep the page white so they read. */
   .pages img { background: #fff; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
 }
 
 @media (max-width: 600px) {

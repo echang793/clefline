@@ -4,12 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>clefline</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/style.css">
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <meta name="theme-color" content="#37f712">
 </head>
 <body>
@@ -19,6 +17,8 @@
 </header>
 
 <main>
+  <noscript><p class="error">clefline needs JavaScript to run.</p></noscript>
+
   <section class="card" id="input-card">
     <label for="url">YouTube or Spotify track link</label>
     <div class="row">
@@ -26,7 +26,7 @@
       <button id="find" class="primary">Find</button>
     </div>
     <p class="hint">Spotify serves no audio, so a Spotify link is matched to a YouTube upload for you to confirm.</p>
-    <p class="error" id="input-error" hidden></p>
+    <p class="error" id="input-error" role="alert" hidden></p>
   </section>
 
   <details class="card" id="history-card">
@@ -36,8 +36,15 @@
     </div>
   </details>
 
-  <section class="card" id="confirm-card" hidden>
-    <h2>Is this the right recording?</h2>
+  <section class="card" id="alert-card" hidden>
+    <div class="alert-row">
+      <p class="error" id="job-error" role="alert"></p>
+      <button id="retry-job" type="button" hidden>Try again</button>
+    </div>
+  </section>
+
+  <section class="card" id="confirm-card" hidden aria-labelledby="confirm-title">
+    <h2 id="confirm-title" tabindex="-1">Is this the right recording?</h2>
     <div id="requested" class="requested" hidden></div>
     <div id="match" class="match"></div>
     <details id="alternatives-wrap" hidden>
@@ -98,20 +105,25 @@
         </label>
       </div>
     </details>
-    <p class="error" id="job-error" hidden></p>
   </section>
 
-  <section class="card" id="progress-card" hidden>
-    <h2 id="progress-title">Working…</h2>
-    <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
-    <p class="stage" id="stage">Queued</p>
+  <section class="card" id="progress-card" hidden aria-labelledby="progress-title">
+    <h2 id="progress-title" tabindex="-1">Working…</h2>
+    <div class="bar" id="progress-bar" role="progressbar" aria-label="Transcription progress"
+         aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <div class="bar-fill" id="bar-fill"></div>
+    </div>
+    <p class="stage" id="stage" aria-live="polite">Queued</p>
     <p class="hint">First time for a song takes a couple of minutes — separating the stems is the slow part. Another instrument for the same song is quick.</p>
+    <div class="card-actions">
+      <button id="cancel-job" type="button">Cancel</button>
+    </div>
   </section>
 
-  <section class="card" id="result-card" hidden>
+  <section class="card" id="result-card" hidden aria-labelledby="result-title">
     <div class="result-head">
       <div>
-        <h2 id="result-title">Score</h2>
+        <h2 id="result-title" tabindex="-1">Score</h2>
         <p class="detected" id="detected"></p>
       </div>
       <div class="downloads">
@@ -120,7 +132,7 @@
         <a id="dl-midi" download>MIDI</a>
       </div>
     </div>
-    <p class="warning" id="sparse-warning" hidden>
+    <p class="warning" id="sparse-warning" role="status" hidden>
       Little to no vocal melody was detected in this stem — this chart may
       come out mostly rests. Instrumental tracks and songs with a very quiet
       or heavily effected vocal are the usual cause.
@@ -130,6 +142,7 @@
   </section>
 </main>
 
+<script src="/poll.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

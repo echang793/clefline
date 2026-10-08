@@ -56,6 +56,18 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="clefline", lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=config.ALLOWED_HOSTS)
 STATIC = paths.ROOT / "static"
+NO_CACHE = {"Cache-Control": "no-cache"}
+
+
+class RevalidatingStaticFiles(StaticFiles):
+    """StaticFiles sends an ETag but no Cache-Control, so a browser may reuse a
+    stale app.js/style.css from heuristic freshness after an edit. The shell is a
+    few small files: make every load revalidate (a 304 when nothing changed)."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 # Only these names are servable from a job directory, and each maps to one file.
 ARTIFACTS = {
@@ -64,13 +76,13 @@ ARTIFACTS = {
     "midi": ("score.mid", "audio/midi"),
 }
 
-# Until the web fonts are self-hosted (a later change) the stylesheet and font
-# files come from Google; nothing else is allowed off-origin except thumbnails.
+# Everything is same-origin (fonts included) except thumbnails, which come from
+# YouTube's/Spotify's image hosts. No inline script or style is allowed.
 CSP = "; ".join([
     "default-src 'self'",
     "img-src 'self' data: https:",
-    "style-src 'self' https://fonts.googleapis.com",
-    "font-src https://fonts.gstatic.com",
+    "style-src 'self'",
+    "font-src 'self'",
     "connect-src 'self'",
     "object-src 'none'",
     "base-uri 'none'",
@@ -269,7 +281,7 @@ def healthz():
 
 @app.get("/manifest.json")
 def manifest():
-    return JSONResponse({
+    return JSONResponse(headers=NO_CACHE, content={
         "name": "clefline",
         "short_name": "clefline",
         "start_url": "/",
@@ -278,6 +290,8 @@ def manifest():
         "theme_color": "#37f712",
         "description": "Paste a song, pick an instrument, get sheet music.",
         "icons": [
+            {"src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png"},
+            {"src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png"},
             {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml",
              "purpose": "any maskable"},
         ],
@@ -286,15 +300,15 @@ def manifest():
 
 @app.get("/favicon.ico")
 def favicon():
-    return FileResponse(STATIC / "icon.svg", media_type="image/svg+xml")
+    return FileResponse(STATIC / "icon.svg", media_type="image/svg+xml", headers=NO_CACHE)
 
 
 @app.get("/sw.js")
 def service_worker():
-    return FileResponse(STATIC / "sw.js", media_type="application/javascript")
+    return FileResponse(STATIC / "sw.js", media_type="application/javascript", headers=NO_CACHE)
 
 
-app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")
+app.mount("/", RevalidatingStaticFiles(directory=STATIC, html=True), name="static")
 
 
 if __name__ == "__main__":
